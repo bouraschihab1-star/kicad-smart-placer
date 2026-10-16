@@ -175,20 +175,20 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
                 else:
                     raise RuntimeError("pcbnew n'est pas disponible et aucune instance de BOARD n'a été fournie.")
 
-            # Extraction des réglages utilisateur / industriels
-            effort_level = settings.get("placement_effort_level", 1)
+            # Extraction des réglages utilisateur / industriels (Mode Extrême par défaut)
+            effort_level = settings.get("placement_effort_level", 3)
             if effort_level == 0:
-                cooling_rate = 0.90
-                max_iterations = 60
-            elif effort_level == 1:
                 cooling_rate = 0.92
-                max_iterations = 120
-            elif effort_level == 2:
+                max_iterations = 100
+            elif effort_level == 1:
                 cooling_rate = 0.95
                 max_iterations = 250
-            else:
-                cooling_rate = 0.98
+            elif effort_level == 2:
+                cooling_rate = 0.97
                 max_iterations = 500
+            else:
+                cooling_rate = 0.985
+                max_iterations = 800
 
             margin_mm = float(settings.get("margin_edge_cuts_mm", settings.get("margin_mm", 1.0)))
             enable_gnd = bool(settings.get("enable_ground_plane", True))
