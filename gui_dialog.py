@@ -40,13 +40,13 @@ logger = setup_logger("SmartPlacerGUI")
 #  VALEURS PAR DÉFAUT INDUSTRIELLES
 # =============================================================================
 DEFAULT_SETTINGS: Dict[str, Any] = {
-    # Onglet 1 : Placement
-    "placement_effort": "Standard",
-    "placement_effort_level": 1,
+    # Onglet 1 : Placement (Mode Extrême et 45° par défaut)
+    "placement_effort": "Extrême",
+    "placement_effort_level": 3,
     "placement_grid": "0.5 mm",
     "placement_grid_mm": 0.5,
     "allow_bcu": False,
-    "allow_rotations_45": False,
+    "allow_rotations_45": True,
 
     # Onglet 2 : Fabrication & Bords
     "margin_edge_cuts_mm": 1.0,
@@ -94,7 +94,7 @@ if WX_AVAILABLE:
         def _init_ui(self):
             sizer = wx.BoxSizer(wx.VERTICAL)
 
-            # 1. Effort d'optimisation
+            # 1. Effort d'optimisation (Extrême par défaut)
             box_effort = wx.StaticBox(self, label="Optimisation")
             sz_effort = wx.StaticBoxSizer(box_effort, wx.HORIZONTAL)
 
@@ -102,7 +102,7 @@ if WX_AVAILABLE:
             sz_effort.Add(lbl_effort, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
 
             self.choice_effort = wx.Choice(box_effort, choices=self.EFFORT_CHOICES)
-            self.choice_effort.SetSelection(1)  # "Standard" par défaut
+            self.choice_effort.SetSelection(3)  # "Extrême" par défaut pour une convergence optimale
             sz_effort.Add(self.choice_effort, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
             sizer.Add(sz_effort, 0, wx.EXPAND | wx.ALL, 6)
 
@@ -130,23 +130,22 @@ if WX_AVAILABLE:
             sz_layer.Add(self.choice_layer, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
             sizer.Add(sz_layer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
 
-            # 4. Angles autorisés
+            # 4. Angles autorisés (0 choix : strictement 45°)
             box_rot = wx.StaticBox(self, label="Orientation")
             sz_rot = wx.StaticBoxSizer(box_rot, wx.HORIZONTAL)
 
             lbl_rot = wx.StaticText(box_rot, label="Angles autorisés :")
             sz_rot.Add(lbl_rot, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
 
-            self.choice_rot = wx.Choice(box_rot, choices=self.ROTATION_CHOICES)
-            self.choice_rot.SetSelection(0)  # "90°" par défaut
-            sz_rot.Add(self.choice_rot, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
+            txt_rot = wx.StaticText(box_rot, label="45° uniquement (Norme stricte)")
+            sz_rot.Add(txt_rot, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
             sizer.Add(sz_rot, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
 
             self.SetSizer(sizer)
 
         def get_values(self) -> Dict[str, Any]:
             effort_idx = self.choice_effort.GetSelection()
-            effort_str = self.EFFORT_CHOICES[effort_idx] if 0 <= effort_idx < len(self.EFFORT_CHOICES) else "Standard"
+            effort_str = self.EFFORT_CHOICES[effort_idx] if 0 <= effort_idx < len(self.EFFORT_CHOICES) else "Extrême"
 
             grid_str = self.choice_grid.GetStringSelection()
             try:
@@ -155,7 +154,6 @@ if WX_AVAILABLE:
                 grid_val = 0.5
 
             allow_bcu = (self.choice_layer.GetSelection() == 1)
-            allow_45 = (self.choice_rot.GetSelection() == 1)
 
             return {
                 "placement_effort": effort_str,
@@ -163,7 +161,7 @@ if WX_AVAILABLE:
                 "placement_grid": grid_str,
                 "placement_grid_mm": grid_val,
                 "allow_bcu": allow_bcu,
-                "allow_rotations_45": allow_45,
+                "allow_rotations_45": True,  # 0 choix : toujours 45°
             }
 
     # -------------------------------------------------------------------------
