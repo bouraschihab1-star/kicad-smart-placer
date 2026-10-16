@@ -82,7 +82,6 @@ if WX_AVAILABLE:
     #  Onglet 1 : Placement — Menus déroulants concis (Thème natif KiCad)
     # -------------------------------------------------------------------------
     class PlacementTabPanel(wx.Panel):
-        EFFORT_CHOICES = ["Rapide", "Standard", "Poussé", "Extrême"]
         GRID_CHOICES = ["0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.54 mm"]
         LAYER_CHOICES = ["F.Cu", "F.Cu + B.Cu"]
         ROTATION_CHOICES = ["90°", "45°"]
@@ -94,16 +93,15 @@ if WX_AVAILABLE:
         def _init_ui(self):
             sizer = wx.BoxSizer(wx.VERTICAL)
 
-            # 1. Effort d'optimisation (Extrême par défaut)
+            # 1. Mode d'optimisation (0 choix : Mode Unique Industriel Haute Densité)
             box_effort = wx.StaticBox(self, label="Optimisation")
             sz_effort = wx.StaticBoxSizer(box_effort, wx.HORIZONTAL)
 
-            lbl_effort = wx.StaticText(box_effort, label="Niveau d'effort :")
+            lbl_effort = wx.StaticText(box_effort, label="Mode :")
             sz_effort.Add(lbl_effort, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
 
-            self.choice_effort = wx.Choice(box_effort, choices=self.EFFORT_CHOICES)
-            self.choice_effort.SetSelection(3)  # "Extrême" par défaut pour une convergence optimale
-            sz_effort.Add(self.choice_effort, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
+            txt_effort = wx.StaticText(box_effort, label="Extrême (Haute densité & Compacité d'aire maximale)")
+            sz_effort.Add(txt_effort, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
             sizer.Add(sz_effort, 0, wx.EXPAND | wx.ALL, 6)
 
             # 2. Grille de placement
@@ -144,8 +142,8 @@ if WX_AVAILABLE:
             self.SetSizer(sizer)
 
         def get_values(self) -> Dict[str, Any]:
-            effort_idx = self.choice_effort.GetSelection()
-            effort_str = self.EFFORT_CHOICES[effort_idx] if 0 <= effort_idx < len(self.EFFORT_CHOICES) else "Extrême"
+            effort_str = "Extrême"
+            effort_idx = 3
 
             grid_str = self.choice_grid.GetStringSelection()
             try:
