@@ -1,82 +1,66 @@
 # Smart Placer & AutoRouter pour KiCad
 
-[![KiCad](https://img.shields.io/badge/KiCad-7.0%20%7C%208.0%20%7C%209.0%20%7C%2010.0-blue.svg)](https://kicad.org)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-green.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
-**Smart Placer & AutoRouter** est une extension complète pour l'éditeur de circuits imprimés (`pcbnew`) de **KiCad**, intégrant un algorithme de placement automatique par **recuit simulé** et un **routeur géométrique DFM** haute performance avec **Push & Shove post-routage pour le plan de masse**.
+Extension pour l'éditeur de circuits imprimés (pcbnew) de KiCad 7, 8, 9 et 10.
+Le projet combine un algorithme de placement automatisé sous contraintes physiques (recuit simulé) et un moteur de routage géométrique A* multicouche intégrant les règles de fabricabilité industrielle (DFM) et une logique de déplacement post-routage (Push and Shove) pour le plan de masse.
 
 ---
 
-## 🚀 Fonctionnalités Clés
+## Architecture Mathématique et Contraintes Implémentées
 
-### 1. Interface Graphique "Zéro Configuration" & Anti-Freeze
-- **Architecture Non-Bloquante :** Exécution du moteur mathématique dans un `Worker Thread` dédié avec délégation sûre (`wx.Yield()` / `wx.CallAfter`), éliminant l'erreur *"Ne répond plus"* sous Windows.
-- **Interface Épurée :** Paramètres pré-remplis avec des valeurs industrielles optimales (pas de curseurs superflus, sélecteurs déroulants pour les couches et champs directs).
-- **Suivi en temps réel :** Barre de progression fluide (`wx.Gauge`) et messages de phase clairs.
+### 1. Moteur de Placement sous Contraintes (Recuit Simulé)
+Le moteur optimise la position spatiale et l'orientation des composants en minimisant une fonction de coût multi-critères :
 
-### 2. Moteur de Placement par Recuit Simulé (Simulated Annealing)
-- **Topologie & Hiérarchie :** Partitionnement Min-Cut (Kernighan-Lin) et détection des groupes rigides (cristaux de quartz, condensateurs de découplage, sous-feuilles hiérarchiques).
-- **Minimisation HPWL :** Longueur totale des équipotentielles optimisée avec préservation de l'orientation (0°, 90°, 180°, 270°).
-- **Modèle spatial physique :** Barrière infranchissable sur le contour `Edge.Cuts` (marge paramétrable de 1.0 mm) et anti-chevauchement des boîtes d'encombrement (AABB).
-
-### 3. Routeur Géométrique A* & Règles DFM Industrielles
-- **Angles 45° et 90° Stricts :** Sortie et entrée orthogonales par le centre des pastilles, raccordements 45° anti-pièges à acide (acid traps).
-- **Pénalité Drastique des Vias (80.0 mm) :** L'algorithme privilégie agressivement les longs détours sur la même couche plutôt que de percer inutilement le PCB.
-- **Détection Stricte de la Collerette de Cuivre des Vias :** Calcul basé sur le diamètre total de cuivre `GetWidth()` (et non le perçage) avec formule d'exclusion DFM :
-  $$\text{Zone d'Exclusion} = \left(\frac{\text{via.GetWidth()}}{2}\right) + \text{Clearance}_{\text{Netclass}}$$
-- **Respect Automatique des NetClasses :** Prise en compte dynamique des largeurs de pistes et isolements (Secteur/230V, Alimentations, Signaux).
-
-### 4. Logique "Push & Shove" pour le Plan de Masse (GND)
-- **Zéro Via GND & Zéro Piste Parasite :** Détection automatique des pastilles de masse (GND / 0V) sans forcer d'artifices de secours.
-- **Boucle d'Élargissement des Couloirs :** Détection post-routage des étranglements (< 0.50 mm) et translation vectorielle des segments responsables pour ouvrir la voie au cuivre coulé.
-- **Cascade Push & Shove :** Décalage des pistes voisines avec préservation stricte de la continuité électrique et respect des règles DRC.
-
-### 5. Nettoyage Automatique de la Sérigraphie (Silkscreen DFM)
-- Détection et repositionnement automatique des identificateurs de composants (`RefDes`) pour éviter tout chevauchement avec les pastilles de cuivre et les zones nues.
+- **Minimisation HPWL (Half-Perimeter Wire Length) :** Évaluation globale de la longueur théorique du chevelu (ratsnest) calculée à partir des coordonnées exactes de chaque pastille.
+- **Partitionnement Min-Cut (Kernighan-Lin) :** Regroupement topologique des composants partageant une forte densité d'interconnexions afin de minimiser le croisement des équipotentielles avant le routage.
+- **Groupes Rigides et Hiérarchie :** Verrouillage géométrique des composants sensibles (quartz d'horloge au plus près des broches oscillateur, condensateurs de découplage accolés aux broches d'alimentation, regroupement par sous-feuilles schématiques).
+- **Contraintes Spatiales Strictes (AABB) :** Détection d'interpénétration par boîtes englobantes alignées sur les axes. Pénalisation infinie en cas de chevauchement de cuivre ou de corps de composant.
+- **Marge d'Usinage (Edge.Cuts) :** Barrière infranchissable maintenant tous les composants à au moins 1.0 mm du bord du PCB pour protéger les pastilles lors du détourage à la fraiseuse.
+- **Discrétisation Angulaire :** Snapping strict des rotations autorisées aux multiples orthogonaux (0°, 90°, 180°, 270°).
 
 ---
 
-## 📦 Installation
+### 2. Routeur Géométrique A* et Règles DFM Industrielles
+Le routeur convertit le chevelu en pistes de cuivre sans court-circuit, en résolvant net par net sur une grille discrète d'unités internes (nanomètres) :
 
-### Méthode 1 : Copie Directe (Recommandée)
-Téléchargez ou clonez ce dépôt, puis copiez le dossier `kicad_smart_placer` dans le répertoire des plugins de votre version de KiCad :
-
-- **Windows :**
-  ```text
-  %APPDATA%\kicad\10.0\scripting\plugins\
-  ou
-  %USERPROFILE%\Documents\KiCad\10.0\3rdparty\plugins\
-  ```
-- **Linux :**
-  ```text
-  ~/.local/share/kicad/10.0/scripting/plugins/
-  ```
-- **macOS :**
-  ```text
-  ~/Library/Preferences/kicad/10.0/scripting/plugins/
-  ```
-
-### Méthode 2 : Archive ZIP
-Un fichier d'installation tout-en-un `kicad_smart_placer.zip` est fourni dans les *Releases* ou générable via `create_zip.py`.
+- **Angles 45° et 90° Stricts (Anti-Acid Traps) :** Élimination absolue des angles intérieurs aigus (< 90°) susceptibles de piéger les agents de gravure chimique et de provoquer des coupures de pistes à la fabrication.
+- **Raccordement Orthogonal des Pastilles :** Les pistes entrent et sortent obligatoirement par le centre géométrique de la pastille sur l'axe X ou Y avant d'entamer une diagonale à 45°.
+- **Pénalité Drastique des Vias (80.0 mm) :** Le coût de transition de couche dans la fonction de coût A* (g-score) et l'heuristique (h-score) est fixé à 80.0 mm. Le solveur privilégie mathématiquement un long détour géométrique sur la même couche plutôt que la création d'un via traversant.
+- **Correction DFM du Diamètre des Vias (Collerette de Cuivre) :** Le test de collision n'utilise pas le diamètre de perçage mécanique (GetDrillValue), mais le diamètre extérieur de la collerette de cuivre (GetWidth). La zone d'exclusion autour d'un via est strictement vérifiée selon la formule :
+  
+  Distance_Exclusion = (via.GetWidth() / 2) + Clearance_Netclass
+  
+  Cette vérification s'applique à la fois sur la grille de routage et lors de la pose physique pour interdire tout effleurement avec les pastilles CMS.
+- **Respect Automatique des NetClasses :** Application automatique des règles d'isolement et de largeur selon la nature du signal (haute tension 230V, alimentations +12V/-12V/+3.3V/GND, signaux logiques).
 
 ---
 
-## 🛠️ Utilisation dans KiCad
+### 3. Logique Push and Shove pour le Plan de Masse (GND)
+Pour garantir la continuité du plan de masse sans recourir à des pistes parasites ni à des vias de couture, le moteur exécute une passe de déplacement dynamique post-routage :
 
-1. Ouvrez votre projet dans l'éditeur de circuit imprimé (`pcbnew`).
-2. Cliquez sur l'icône **Smart Placer & AutoRouter** dans la barre d'outils supérieure (ou via le menu *Outils > Scripts externes*).
-3. Ajustez les paramètres si nécessaire (Plan de masse `B.Cu`, `F.Cu` ou `B.Cu + F.Cu`, marge du bord).
-4. Cliquez sur **Commencer** :
-   - Phase 1-5 : Extraction et placement optimisé par recuit simulé.
-   - Phase 6-8 : Routage A* multicouche DFM sans croisement.
-   - Phase 9 : Push & Shove des couloirs de masse et création du plan de masse.
-   - Phase 10 : Nettoyage de la sérigraphie et sauvegarde.
+- **Détection des Étranglements :** Analyse de la distance libre entre les pastilles de masse et les segments de piste environnants. Un étranglement est détecté dès que l'espace libre est inférieur à 0.50 mm.
+- **Translation Dynamique :** Le segment de piste provoquant le blocage subit une translation radiale vers l'extérieur du pad GND afin d'ouvrir un couloir d'au moins 0.50 mm permettant au cuivre de masse de s'écouler librement.
+- **Cascade Push and Shove :** Si le déplacement d'un segment réduit l'écart avec une piste voisine d'un autre net sous le seuil d'isolement DRC, cette voisine est à son tour décalée de manière récursive.
+- **Préservation Stricte des Connexions (Ancrages) :** Les extrémités des pistes en contact direct avec une pastille ou un via restent ancrées à leur position d'origine. Seul le point intermédiaire ou le corps du segment est translaté, et les segments contigus du même réseau sont automatiquement réalignés pour préserver 100% de la continuité électrique sans générer d'éléments déconnectés.
 
 ---
 
-## 📄 Licence
+### 4. Dégagement de la Sérigraphie (Silkscreen)
+Passe de nettoyage DFM analysant les boîtes englobantes des identificateurs de composants (RefDes) pour les décaler hors des pastilles de cuivre et des pistes nues, évitant tout rejet de fabrication lors du vernis épargne.
 
-Ce projet est distribué sous la licence [MIT](LICENSE).
+---
 
-Auteur : **Bouras Chihabedinne** (<bouraschihab1@gmail.com>)
+## Installation
+
+Copier le dossier `kicad_smart_placer` dans le répertoire des extensions de votre installation KiCad :
+
+- Windows : `%APPDATA%\kicad\10.0\scripting\plugins\` ou `%USERPROFILE%\Documents\KiCad\10.0\3rdparty\plugins\`
+- Linux : `~/.local/share/kicad/10.0/scripting/plugins/`
+- macOS : `~/Library/Preferences/kicad/10.0/scripting/plugins/`
+
+Une archive prête à l'emploi `kicad_smart_placer.zip` est également disponible dans la section Releases du dépôt.
+
+---
+
+## Auteur
+
+Bouras Chihabedinne (bouraschihab1@gmail.com)
