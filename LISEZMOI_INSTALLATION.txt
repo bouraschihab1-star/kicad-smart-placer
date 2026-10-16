@@ -1,0 +1,62 @@
+=============================================================================
+  SMART PLACER & AUTOROUTER POUR KICAD — GUIDE D'INSTALLATION ET D'UTILISATION
+=============================================================================
+Version : 1.0 (Édition Professionnelle)
+Compatibilité : KiCad 7.x, 8.x, 9.x, 10.x (Windows, Linux, macOS)
+Auteur : Smart Placer Team
+
+-----------------------------------------------------------------------------
+1. INSTALLATION RAPIDE (Moins d'une minute)
+-----------------------------------------------------------------------------
+
+Pour installer le plugin, il suffit de copier le dossier complet 'kicad_smart_placer'
+dans le répertoire des plugins de votre version de KiCad :
+
+■ SOUS WINDOWS :
+  Ouvrez l'explorateur de fichiers et collez l'un de ces chemins dans la barre d'adresse :
+  
+  Option A (Recommandée - Dossier Utilisateur KiCad) :
+    %USERPROFILE%\Documents\KiCad\10.0\scripting\plugins\
+    (Remplacez 10.0 par votre version : 8.0, 9.0 ou 10.0)
+
+  Option B (Dossier AppData KiCad) :
+    %APPDATA%\kicad\10.0\scripting\plugins\
+
+■ SOUS LINUX :
+  Copiez le dossier dans :
+    ~/.local/share/kicad/10.0/scripting/plugins/
+
+■ SOUS MACOS :
+  Copiez le dossier dans :
+    ~/Library/Preferences/kicad/10.0/scripting/plugins/
+
+*(Si le sous-dossier 'scripting/plugins' n'existe pas encore, créez-le).*
+
+
+-----------------------------------------------------------------------------
+2. ACTIVATION DANS KICAD PCB EDITOR
+-----------------------------------------------------------------------------
+
+1. Lancez KiCad et ouvrez votre carte PCB dans l'Éditeur de circuit imprimé (PCB Editor).
+2. Dans le menu du haut, cliquez sur :
+     Outils (Tools)  →  Scripts externes (External Plugins)  →  Actualiser les plugins (Refresh Plugins)
+3. L'icône "Smart Placer & AutoRouter" apparaît automatiquement :
+     - Dans la barre d'outils supérieure de KiCad
+     - Et sous le menu : Outils → Scripts externes → Smart Placer & AutoRouter.
+
+
+-----------------------------------------------------------------------------
+3. UTILISATION
+-----------------------------------------------------------------------------
+
+1. Cliquez sur le bouton ou le menu du plugin pour ouvrir l'interface.
+2. Tout est déjà configuré de manière optimale ("Zéro Configuration") :
+     - Marge Edge.Cuts : 1.0 mm par défaut
+     - Plan de masse : Activé sur F.Cu par défaut
+     - Routage : Optimal avec respect strict des NetClasses et règles DFM
+3. Cliquez sur "Commencer" :
+     - Le placement optimisé par recuit simulé se calcule en tâche de fond.
+     - L'interface reste fluide sans aucun blocage.
+     - Le routage automatique trace les pistes et génère le plan de masse.
+4. Vos composants et pistes sont instantanément placés et prêts à la fabrication !
+=============================================================================
