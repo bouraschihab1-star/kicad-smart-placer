@@ -115,8 +115,8 @@ PROB_FLIP = 0.00        # Basculement Top ↔ Bottom (Désactivé : 100% F.Cu)
 WEIGHT_HPWL = 1.0           # Poids du HPWL
 WEIGHT_COLLISION = 1000.0    # Poids des collisions (priorité absolue)
 WEIGHT_CONSTRAINT = 10.0     # Poids des contraintes métier
-WEIGHT_AREA = 5.0           # Poids de minimisation de l'aire et compacité globale
-WEIGHT_CROSSING = 50.0       # Poids de planarité anti-vias (élimination des croisements - PRIORITÉ ABSOLUE)
+WEIGHT_AREA = 35.0          # Poids de minimisation de l'aire et compacité globale (Priorité forte)
+WEIGHT_CROSSING = 8.0       # Poids de planarité anti-vias (équilibré avec l'aire)
 
 # Nombre de profondeurs de récursion pour le Min-Cut
 MINCUT_RECURSION_DEPTH = 3
@@ -454,16 +454,7 @@ class SimulatedAnnealing:
         self.net_analyzer = net_analyzer
         self.spatial_model = spatial_model
         self.constraint_engine = constraint_engine
-        # Définir un espace de travail effectif suffisant pour que l'optimisation
-        # globale ne soit pas bloquée par un ancien contour Edge.Cuts trop restreint
-        if placement_area and placement_area.width > 0 and placement_area.height > 0:
-            cx = (placement_area.x_min + placement_area.x_max) // 2
-            cy = (placement_area.y_min + placement_area.y_max) // 2
-            min_half_w = max(placement_area.width // 2, from_mm(35.0))
-            min_half_h = max(placement_area.height // 2, from_mm(35.0))
-            self.placement_area = BBox(cx - min_half_w, cy - min_half_h, cx + min_half_w, cy + min_half_h)
-        else:
-            self.placement_area = placement_area
+        self.placement_area = placement_area
 
         if self.spatial_model and self.placement_area:
             self.spatial_model.set_placement_area(self.placement_area)
@@ -628,33 +619,44 @@ class SimulatedAnnealing:
             cy_mm = 75.0
 
         seed_mm = {
-            'U2':  (cx_mm - 8.0, cy_mm - 1.0),
-            'R16': (cx_mm - 1.5, cy_mm - 11.0),
-            'R14': (cx_mm - 1.5, cy_mm - 2.5),
-            'R12': (cx_mm - 1.5, cy_mm + 6.0),
-            'R10': (cx_mm - 1.5, cy_mm + 14.5),
-            'U6':  (cx_mm + 4.5, cy_mm - 11.0),
-            'U5':  (cx_mm + 4.5, cy_mm - 2.5),
-            'U4':  (cx_mm + 4.5, cy_mm + 6.0),
-            'U3':  (cx_mm + 4.5, cy_mm + 14.5),
-            'J6':  (cx_mm + 14.5, cy_mm - 11.0),
-            'J5':  (cx_mm + 14.5, cy_mm - 2.5),
-            'J3':  (cx_mm + 14.5, cy_mm + 6.0),
-            'J4':  (cx_mm + 14.5, cy_mm + 14.5),
-            'J1':  (cx_mm + 14.5, cy_mm - 16.5),
-            'C2':  (cx_mm + 8.5,  cy_mm - 16.5),
-            'U12': (cx_mm - 8.5,  cy_mm + 11.5),
-            'C3':  (cx_mm - 14.0, cy_mm + 8.0),
-            'C4':  (cx_mm - 14.0, cy_mm + 14.5),
-            'J2':  (cx_mm - 14.0, cy_mm - 1.0),
+            'U2':  (cx_mm - 7.5, cy_mm - 2.0),
+            'J7':  (cx_mm - 7.5, cy_mm - 7.5),
+            'U12': (cx_mm - 11.5, cy_mm + 10.0),
+
+            'R16': (cx_mm - 2.5, cy_mm - 10.66),
+            'R14': (cx_mm - 2.5, cy_mm - 1.86),
+            'R12': (cx_mm - 2.5, cy_mm + 6.94),
+            'R10': (cx_mm - 2.5, cy_mm + 15.74),
+
+            'U6':  (cx_mm + 1.2, cy_mm - 13.2),
+            'U5':  (cx_mm + 1.2, cy_mm - 4.4),
+            'U4':  (cx_mm + 1.2, cy_mm + 4.4),
+            'U3':  (cx_mm + 1.2, cy_mm + 13.2),
+
+            'J6':  (cx_mm + 14.2, cy_mm - 10.66),
+            'J5':  (cx_mm + 14.2, cy_mm - 1.86),
+            'J3':  (cx_mm + 14.2, cy_mm + 6.94),
+            'J4':  (cx_mm + 14.2, cy_mm + 15.74),
+
+            'J1':  (cx_mm + 14.2, cy_mm - 15.5),
+            'C2':  (cx_mm + 6.5,  cy_mm - 16.0),
+
+            'J2':  (cx_mm - 18.5, cy_mm - 2.0),
+            'J9':  (cx_mm - 18.5, cy_mm + 5.0),
+            'J8':  (cx_mm - 18.5, cy_mm + 13.5),
+            'C3':  (cx_mm - 17.5, cy_mm + 10.0),
+            'C4':  (cx_mm - 11.5, cy_mm + 17.5),
         }
         seed_orients = {
             'U2': 180.0,
+            'J7': 0.0,
+            'U12': 0.0,
             'R16': 180.0, 'R14': 180.0, 'R12': 180.0, 'R10': 180.0,
             'U6': 0.0, 'U5': 0.0, 'U4': 0.0, 'U3': 0.0,
             'J6': 0.0, 'J5': 0.0, 'J3': 0.0, 'J4': 0.0,
             'J1': 0.0, 'C2': 0.0,
-            'U12': 0.0, 'C3': 0.0, 'C4': 0.0, 'J2': 0.0,
+            'J2': 0.0, 'J9': 0.0, 'J8': 0.0,
+            'C3': 90.0, 'C4': 0.0
         }
 
         seed_pos = {}
@@ -841,7 +843,7 @@ class SimulatedAnnealing:
 
         # 4. Pénalité de planarité anti-vias (croisements de nets)
         crossings = self._compute_net_crossings()
-        crossing_penalty = crossings * from_mm(40.0)
+        crossing_penalty = crossings * from_mm(10.0)
 
         # 5. Pénalité d'aire et compacité minimale optimale (Contrainte d'aire minimale)
         enclosing_box = compute_enclosing_bbox(current_bboxes)
@@ -852,7 +854,7 @@ class SimulatedAnnealing:
         dists = [math.hypot(p[0] - cx, p[1] - cy) for p in self.current_positions.values()]
         avg_spread = sum(dists) / len(dists) if dists else 0.0
         max_spread = max(dists) if dists else 0.0
-        area_penalty = board_hp + int(area_mm2 * 2e5) + int(avg_spread) + int(max_spread * 2.0)
+        area_penalty = int(board_hp * 2) + int(area_mm2 * 1e6) + int(avg_spread * 3.0) + int(max_spread * 4.0)
 
         # Coût composite pondéré
         total_cost = (
@@ -876,15 +878,10 @@ class SimulatedAnnealing:
         if not area or area.width == 0 or area.height == 0:
             return x, y
 
-        cx = (area.x_min + area.x_max) // 2
-        cy = (area.y_min + area.y_max) // 2
-        min_half_w = max(area.width // 2, from_mm(28.0))
-        min_half_h = max(area.height // 2, from_mm(28.0))
-
-        eff_x_min = cx - min_half_w
-        eff_x_max = cx + min_half_w
-        eff_y_min = cy - min_half_h
-        eff_y_max = cy + min_half_h
+        eff_x_min = area.x_min
+        eff_x_max = area.x_max
+        eff_y_min = area.y_min
+        eff_y_max = area.y_max
 
         edge_margin = from_mm(0.5)  # Marge de sécurité de 0.5 mm du bord Edge.Cuts
 
@@ -1025,6 +1022,20 @@ class SimulatedAnnealing:
         comp = self._comp_by_ref[ref]
         old_pos = self.current_positions.get(ref, comp.position)
 
+        # Force centripète de compactage d'aire (attraction vers le centre du cluster de composants)
+        if self.current_positions:
+            center_x = sum(p[0] for p in self.current_positions.values()) // len(self.current_positions)
+            center_y = sum(p[1] for p in self.current_positions.values()) // len(self.current_positions)
+            c_dist = math.hypot(center_x - old_pos[0], center_y - old_pos[1])
+            if c_dist > 0:
+                c_step = min(amplitude_nm, c_dist * 0.4)
+                comp_dx = int(((center_x - old_pos[0]) / c_dist) * c_step)
+                comp_dy = int(((center_y - old_pos[1]) / c_dist) * c_step)
+            else:
+                comp_dx, comp_dy = 0, 0
+        else:
+            comp_dx, comp_dy = 0, 0
+
         # Attraction dirigée par les connexions (Force-Directed Simulated Annealing)
         barycenter = self.net_analyzer.get_connected_barycenter(ref, self.current_positions)
         if barycenter is not None:
@@ -1037,15 +1048,15 @@ class SimulatedAnnealing:
                 step = min(amplitude_nm, dist * 0.7)
                 attr_dx = int((fx / dist) * step)
                 attr_dy = int((fy / dist) * step)
-                # 65% attraction vers ses nets connectés + 35% exploration
-                dx = int(0.65 * attr_dx + 0.35 * rand_dx)
-                dy = int(0.65 * attr_dy + 0.35 * rand_dy)
+                # 50% attraction nets + 25% compactage centripète + 25% exploration
+                dx = int(0.50 * attr_dx + 0.25 * comp_dx + 0.25 * rand_dx)
+                dy = int(0.50 * attr_dy + 0.25 * comp_dy + 0.25 * rand_dy)
             else:
-                dx = rand_dx
-                dy = rand_dy
+                dx = int(0.50 * comp_dx + 0.50 * rand_dx)
+                dy = int(0.50 * comp_dy + 0.50 * rand_dy)
         else:
-            dx = rand_dx
-            dy = rand_dy
+            dx = int(0.50 * comp_dx + 0.50 * rand_dx)
+            dy = int(0.50 * comp_dy + 0.50 * rand_dy)
 
         orient = self.current_orientations.get(ref, comp.orientation)
         clamped_x, clamped_y = self._clamp_position_inside_board(
