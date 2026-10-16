@@ -405,9 +405,9 @@ class SmartRouter:
         g_scores = {(sc, sr): 0.0}
         came_from = {}
 
-        escape_envelope = 3
+        escape_envelope = getattr(self, "escape_envelope", 3)
         expansions = 0
-        max_expansions = 150000
+        max_expansions = getattr(self, "current_max_expansions_single", 500000)
 
         # Règle mathématique de clearance : distance minimale = demi-largeur de piste + clearance Netclass
         req_track_clearance = rule.track_width / 2.0 + rule.clearance
@@ -559,9 +559,9 @@ class SmartRouter:
             g_scores[(sl, sc, sr)] = init_g
             heapq.heappush(open_set, (init_g + heuristic(sl, sc, sr), init_g, (sl, sc, sr, -1, 100, 0)))
 
-        escape_envelope = 3
+        escape_envelope = getattr(self, "escape_envelope", 3)
         expansions = 0
-        max_expansions = 250000
+        max_expansions = getattr(self, "current_max_expansions", 800000)
 
         req_track_clearance = rule.track_width / 2.0 + rule.clearance
         req_cells = max(1, int(math.ceil(req_track_clearance / self.grid_step)))
@@ -1148,6 +1148,7 @@ class SmartRouter:
         success_nets = 0
 
         total_nets_count = len(nets_to_route)
+        unresolved_conns = []
         for idx_net, net in enumerate(nets_to_route):
             if progress_callback and total_nets_count > 0:
                 pct = int(55 + (idx_net / total_nets_count) * 35)  # 55% à 90%
@@ -1198,13 +1199,65 @@ class SmartRouter:
                                 break
                     if not alt_found:
                         logger.warning(
-                            f"  Échec routage : Réseau {net['name']} "
+                            f"  Échec routage (Passe 1) : Réseau {net['name']} "
                             f"({p1['ref']}.{p1['pad_num']} -> {p2['ref']}.{p2['pad_num']})"
                         )
                         net_ok = False
+                        unresolved_conns.append((p1, p2, net))
 
             if net_ok:
                 success_nets += 1
+
+        # -------------------------------------------------------------
+        #  PASSE 2 : NÉGOCIATION ET RÉSOLUTION DES CONNEXIONS COMPLEXES
+        # -------------------------------------------------------------
+        if unresolved_conns:
+            logger.info(f"\n▶ PASSE 2 : Résolution approfondie des {len(unresolved_conns)} connexion(s) complexe(s)...")
+            if progress_callback:
+                progress_callback(90, "Passe 2 : Résolution approfondie des connexions complexes...")
+
+            saved_via_penalty = self.via_penalty
+            # En passe 2, autoriser le franchissement multicouche si le contournement monocouche est saturé
+            self.via_penalty = from_mm(35.0)
+            self.current_max_expansions = 1200000
+            self.current_max_expansions_single = 800000
+
+            resolved_in_pass2 = 0
+            for p1, p2, net in unresolved_conns:
+                logger.info(f"  Re-tentative haute résolution : {net['name']} ({p1['ref']}.{p1['pad_num']} -> {p2['ref']}.{p2['pad_num']})")
+                path = self._route_astar(p1, p2, net['netcode'], net['rule'])
+                if path:
+                    segs, vias, l = self._apply_path_with_kicad_items(
+                        path, p1, p2, net['netcode'], net['rule']
+                    )
+                    total_segs += segs
+                    total_vias += vias
+                    total_len += l
+                    resolved_in_pass2 += 1
+                    logger.info(f"  ✓ Connexion résolue avec succès pour {net['name']} !")
+                else:
+                    # Essai 2 : Escape élargi
+                    old_escape = getattr(self, "escape_envelope", 3)
+                    self.escape_envelope = 4
+                    path = self._route_astar_multilayer(p1, p2, net['netcode'], net['rule'])
+                    self.escape_envelope = old_escape
+                    if path:
+                        segs, vias, l = self._apply_path_with_kicad_items(
+                            path, p1, p2, net['netcode'], net['rule']
+                        )
+                        total_segs += segs
+                        total_vias += vias
+                        total_len += l
+                        resolved_in_pass2 += 1
+                        logger.info(f"  ✓ Connexion résolue (escape élargi) pour {net['name']} !")
+                    else:
+                        logger.error(f"  ✗ Échec persistant pour {net['name']}")
+
+            self.via_penalty = saved_via_penalty
+            self.current_max_expansions = 800000
+            self.current_max_expansions_single = 500000
+
+            success_nets += resolved_in_pass2
 
         elapsed = time.time() - start_t
         stats = {
