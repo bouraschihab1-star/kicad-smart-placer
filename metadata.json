@@ -1,0 +1,36 @@
+{
+  "$schema": "https://go.kicad.org/pcm/schemas/v1",
+  "name": "Smart Placer & AutoRouter",
+  "description": "Placement et routage automatique intelligent des composants PCB pour KiCad avec recuit simulé, DFM et plan de masse.",
+  "description_full": "Smart Placer & AutoRouter offre un placement automatisé haute performance basé sur le recuit simulé, le partitionnement Min-Cut, la détection des groupes rigides et de sous-feuilles, un routage géométrique A* sans court-circuit respectant les NetClasses et les règles DFM, ainsi que la génération d'un plan de masse automatique.",
+  "identifier": "org.kicad.smart_placer",
+  "type": "plugin",
+  "author": {
+    "name": "Bouras Chihabedinne",
+    "contact": {
+      "email": "bouraschihab1@gmail.com",
+      "github": "https://github.com/bouraschihab1-star/kicad-smart-placer"
+    }
+  },
+  "license": "MIT",
+  "resources": {
+    "homepage": "https://github.com/bouraschihab1-star/kicad-smart-placer",
+    "repository": "https://github.com/bouraschihab1-star/kicad-smart-placer"
+  },
+  "versions": [
+    {
+      "version": "1.0.0",
+      "status": "stable",
+      "kicad_version": ">=7.0",
+      "download_sha256": "",
+      "download_size": 0,
+      "download_url": "",
+      "install_size": 0,
+      "platforms": [
+        "windows",
+        "linux",
+        "macos"
+      ]
+    }
+  ]
+}
