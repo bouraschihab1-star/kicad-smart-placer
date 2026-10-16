@@ -226,11 +226,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             keepouts = extractor.extract_keepouts()
             placement_area = extractor.compute_placement_area()
 
-            cx = (placement_area.x_min + placement_area.x_max) // 2
-            cy = (placement_area.y_min + placement_area.y_max) // 2
-            min_half_w = max(placement_area.width // 2, from_mm(35.0))
-            min_half_h = max(placement_area.height // 2, from_mm(35.0))
-            eff_placement_area = BBox(cx - min_half_w, cy - min_half_h, cx + min_half_w, cy + min_half_h)
+            eff_placement_area = placement_area
 
             logger.info(f"  → {len(components)} composants, {len(nets)} nets, {len(keepouts)} zones interdites")
 
