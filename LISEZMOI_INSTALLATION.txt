@@ -12,7 +12,7 @@ Auteur : Smart Placer Team
 Pour installer le plugin, il suffit de copier le dossier complet 'kicad_smart_placer'
 dans le répertoire des plugins de votre version de KiCad :
 
-■ SOUS WINDOWS :
+- SOUS WINDOWS :
   Ouvrez l'explorateur de fichiers et collez l'un de ces chemins dans la barre d'adresse :
   
   Option A (Recommandée - Dossier Utilisateur KiCad) :
@@ -22,11 +22,11 @@ dans le répertoire des plugins de votre version de KiCad :
   Option B (Dossier AppData KiCad) :
     %APPDATA%\kicad\10.0\scripting\plugins\
 
-■ SOUS LINUX :
+- SOUS LINUX :
   Copiez le dossier dans :
     ~/.local/share/kicad/10.0/scripting/plugins/
 
-■ SOUS MACOS :
+- SOUS MACOS :
   Copiez le dossier dans :
     ~/Library/Preferences/kicad/10.0/scripting/plugins/
 
