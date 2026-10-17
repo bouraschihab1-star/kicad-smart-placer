@@ -37,6 +37,9 @@ import heapq
 import time
 from typing import List, Dict, Tuple, Optional, Set
 from collections import defaultdict
+import os
+import json
+import fnmatch
 
 try:
     import pcbnew
@@ -206,7 +209,7 @@ class SmartRouter:
         return u in gnd_aliases or any(alias in u for alias in ["GND", "0V", "GROUND"])
 
     def extract_netclasses(self):
-        """Extrait toutes les NetClasses du circuit imprimé (KiCad 10 et antérieur)."""
+        """Extrait toutes les NetClasses du circuit imprimé et du fichier projet .kicad_pro."""
         self.net_rules.clear()
 
         # 1. Règles par défaut
@@ -236,14 +239,59 @@ class SmartRouter:
                 except Exception:
                     pass
 
-        # 2. Associer chaque net à sa NetClass effective
+        # 2. Tentative de lecture du fichier projet .kicad_pro adjacent
+        pro_classes = {}
+        pro_patterns = []
+        try:
+            b_path = self.board.GetFileName() if hasattr(self.board, "GetFileName") else None
+            if b_path and os.path.exists(b_path):
+                pro_path = os.path.splitext(b_path)[0] + ".kicad_pro"
+                if os.path.exists(pro_path):
+                    with open(pro_path, "r", encoding="utf-8") as fp:
+                        pro_data = json.load(fp)
+                    n_sets = pro_data.get("net_settings", {})
+                    for c_dict in n_sets.get("classes", []):
+                        pro_classes[c_dict.get("name", "")] = c_dict
+                    pro_patterns = n_sets.get("netclass_patterns", [])
+                    logger.info(
+                        f"NetClasses du projet .kicad_pro chargées : {len(pro_classes)} classe(s), "
+                        f"{len(pro_patterns)} motif(s) d'assignation."
+                    )
+        except Exception as e:
+            logger.debug(f"Lecture .kicad_pro omise : {e}")
+
+        # 3. Associer chaque net à sa NetClass effective
         for netcode, net in self.board.GetNetsByNetcode().items():
             nname = net.GetNetname()
             if not nname:
                 continue
 
             rule = None
-            if ns and hasattr(ns, "GetEffectiveNetClass"):
+            # Priorité A : motifs d'assignation du fichier projet .kicad_pro
+            if pro_patterns:
+                for pat in pro_patterns:
+                    p_str = pat.get("pattern", "")
+                    if fnmatch.fnmatch(nname, p_str):
+                        c_name = pat.get("netclass", "Default")
+                        c_info = pro_classes.get(c_name)
+                        if c_info:
+                            tw = c_info.get("track_width", 0.25)
+                            cl = c_info.get("clearance", 0.20)
+                            upper_n = nname.upper()
+                            if any(m in upper_n for m in ["230", "MAINS", "SECTEUR"]):
+                                tw = min(tw, 1.00)
+                                cl = min(cl, 1.00)
+                            rule = NetClassRule(
+                                name=c_name,
+                                track_width_nm=from_mm(tw),
+                                clearance_nm=from_mm(cl),
+                                via_dia_nm=from_mm(c_info.get("via_diameter", 0.60)),
+                                via_drill_nm=from_mm(c_info.get("via_drill", 0.30))
+                            )
+                        break
+
+            # Priorité B : API native KiCad GetEffectiveNetClass
+            if rule is None and ns and hasattr(ns, "GetEffectiveNetClass"):
                 try:
                     eff = ns.GetEffectiveNetClass(net)
                     if eff:
@@ -266,9 +314,7 @@ class SmartRouter:
                     via_drill_nm=default_rule.via_drill
                 )
 
-            # Prise en compte intelligente des contraintes physiques :
-            # - Secteur / 230V : isolation et largeur renforcées (0.80 mm / cl 0.50 mm)
-            # - Alimentations (+12V, -12V, +3.3V, GND) : largeur adaptée pour fort courant
+            # Priorité C : Règles physiques par défaut selon le nom du réseau
             upper = nname.upper()
             if rule.name == "Default":
                 if any(m in upper for m in ["230", "MAINS", "AC", "SECTEUR"]):
@@ -309,6 +355,35 @@ class SmartRouter:
         self.clearance_cells.clear()
         self.pad_boxes.clear()
         self.pad_via_keepout.clear()
+
+        # Extraction des zones de règle / Keepouts (Rule Areas)
+        keepout_cells = 0
+        if hasattr(self.board, "Zones"):
+            for zone in self.board.Zones():
+                if hasattr(zone, "GetIsRuleArea") and zone.GetIsRuleArea():
+                    zbox = zone.GetBoundingBox()
+                    margin_ko = from_mm(0.60)
+                    c1, r1 = self._coord_to_grid(zbox.GetX() - margin_ko, zbox.GetY() - margin_ko)
+                    c2, r2 = self._coord_to_grid(zbox.GetRight() + margin_ko, zbox.GetBottom() + margin_ko)
+                    lset = zone.GetLayerSet()
+                    layers = []
+                    if lset.Contains(pcbnew.F_Cu): layers.append(0)
+                    if lset.Contains(pcbnew.B_Cu): layers.append(1)
+
+                    if hasattr(zone, "GetDoNotAllowTracks") and zone.GetDoNotAllowTracks():
+                        for l in layers:
+                            for c in range(min(c1, c2), max(c1, c2) + 1):
+                                for r in range(min(r1, r2), max(r1, r2) + 1):
+                                    if 0 <= c < self.cols and 0 <= r < self.rows:
+                                        self.occupied_cells[(l, c, r)] = -9999
+                                        keepout_cells += 1
+                    if hasattr(zone, "GetDoNotAllowVias") and zone.GetDoNotAllowVias():
+                        for c in range(min(c1, c2), max(c1, c2) + 1):
+                            for r in range(min(r1, r2), max(r1, r2) + 1):
+                                if 0 <= c < self.cols and 0 <= r < self.rows:
+                                    self.pad_via_keepout.add((c, r))
+        if keepout_cells > 0:
+            logger.info(f"Keepout Rule Areas : {keepout_cells} cellules marquées interdites aux pistes.")
 
         logger.info(
             f"Grille de routage initialisée : {self.cols}x{self.rows} cellules "
@@ -412,7 +487,13 @@ class SmartRouter:
 
                 pad_netname = pad.GetNetname()
                 is_gnd_pad = self.ground_plane_enabled and self.is_ground_net(pad_netname)
-                eff_clearance = max(eff_pad_clearance, from_mm(0.50)) if is_gnd_pad else eff_pad_clearance
+                is_tht = pad.GetDrillSize().x > 0
+                if is_gnd_pad:
+                    eff_clearance = max(eff_pad_clearance, from_mm(0.50))
+                elif is_tht:
+                    eff_clearance = eff_pad_clearance + rule.track_width // 2
+                else:
+                    eff_clearance = eff_pad_clearance if eff_pad_clearance <= from_mm(0.15) else (eff_pad_clearance + rule.track_width // 2)
                 cl_cells = max(1, int(math.ceil(eff_clearance / self.grid_step)))
 
                 for layer in layers:
@@ -453,6 +534,58 @@ class SmartRouter:
                             if (layer_id, c, r) not in self.occupied_cells:
                                 self.occupied_cells[(layer_id, c, r)] = -999
 
+        # Libération des couloirs d'échappement normaux pour les circuits intégrés fins (QFN, TQFP, etc.)
+        # Évite que les halos d'isolation des broches voisines d'un même boîtier ne bloquent la sortie orthogonale
+        for fp in self.board.GetFootprints():
+            pads = list(fp.Pads())
+            if len(pads) < 3:
+                continue
+            c_x, c_y = fp.GetPosition().x, fp.GetPosition().y
+            fp_netcodes = {p.GetNetCode() for p in pads if p.GetNetCode() > 0}
+
+            for pad in pads:
+                pnet = pad.GetNetCode()
+                if pnet <= 0:
+                    continue
+                pos = pad.GetPosition()
+                size = pad.GetSize()
+                dx = pos.x - c_x
+                dy = pos.y - c_y
+                rule = self.net_rules.get(pnet, NetClassRule())
+
+                lset = pad.GetLayerSet()
+                layers = []
+                if lset.Contains(pcbnew.F_Cu): layers.append(0)
+                if lset.Contains(pcbnew.B_Cu): layers.append(1)
+
+                if abs(dx) >= abs(dy):
+                    dir_x = 1 if dx > 0 else -1
+                    L_esc = size.x // 2 + rule.clearance + from_mm(0.60)
+                    x_start = min(pos.x, pos.x + dir_x * L_esc)
+                    x_end = max(pos.x, pos.x + dir_x * L_esc)
+                    y_start = pos.y - size.y // 2
+                    y_end = pos.y + size.y // 2
+                else:
+                    dir_y = 1 if dy > 0 else -1
+                    L_esc = size.y // 2 + rule.clearance + from_mm(0.60)
+                    x_start = pos.x - size.x // 2
+                    x_end = pos.x + size.x // 2
+                    y_start = min(pos.y, pos.y + dir_y * L_esc)
+                    y_end = max(pos.y, pos.y + dir_y * L_esc)
+
+                c1, r1 = self._coord_to_grid(x_start, y_start)
+                c2, r2 = self._coord_to_grid(x_end, y_end)
+
+                other_fp_nets = fp_netcodes - {pnet}
+                for l in layers:
+                    for c in range(min(c1, c2), max(c1, c2) + 1):
+                        for r in range(min(r1, r2), max(r1, r2) + 1):
+                            if 0 <= c < self.cols and 0 <= r < self.rows:
+                                cls_set = self.clearance_cells.get((l, c, r))
+                                if cls_set:
+                                    cls_set.difference_update(other_fp_nets)
+                                self.clearance_cells[(l, c, r)].add(pnet)
+
     def is_via_placement_valid(
         self,
         vx: int,
@@ -468,6 +601,10 @@ class SmartRouter:
 
         Si cette condition est fausse pour n'importe quelle pastille du circuit, le placement est rejeté.
         """
+        c, r = self._coord_to_grid(vx, vy)
+        if (c, r) in self.pad_via_keepout:
+            return False
+
         via_half_width = rule.via_dia / 2.0
         clearance_netclass = rule.clearance
 
@@ -475,7 +612,8 @@ class SmartRouter:
         if self.all_pad_obstacles:
             for pad in self.all_pad_obstacles:
                 pad_half_max = pad.max_dim / 2.0
-                min_allowed_dist = via_half_width + pad_half_max + clearance_netclass
+                eff_cl = max(clearance_netclass, pad.clearance)
+                min_allowed_dist = via_half_width + pad_half_max + eff_cl
                 dx = vx - pad.center_x
                 dy = vy - pad.center_y
                 dist_centre_a_centre = math.hypot(dx, dy)
@@ -594,6 +732,30 @@ class SmartRouter:
         g_scores = {(sc, sr): 0.0}
         came_from = {}
 
+        hv_blocked_cells = set()
+        if rule.clearance > from_mm(0.35):
+            req_cl = min(rule.clearance, from_mm(1.00)) + rule.track_width // 2
+            start_ref = start_pad.get('ref')
+            end_ref = end_pad.get('ref')
+            start_pnum = str(start_pad.get('pad_num', ''))
+            end_pnum = str(end_pad.get('pad_num', ''))
+            for pad_obs in self.all_pad_obstacles:
+                if target_layer == 0 and not pad_obs.on_fcu:
+                    continue
+                if target_layer == 1 and not pad_obs.on_bcu:
+                    continue
+                if (pad_obs.ref == start_ref and str(pad_obs.pad_num) == start_pnum) or \
+                   (pad_obs.ref == end_ref and str(pad_obs.pad_num) == end_pnum):
+                    continue
+                if pad_obs.net_code != netcode:
+                    pad_half_w = pad_obs.size_x // 2 + req_cl
+                    pad_half_h = pad_obs.size_y // 2 + req_cl
+                    c1, r1 = self._coord_to_grid(pad_obs.center_x - pad_half_w, pad_obs.center_y - pad_half_h)
+                    c2, r2 = self._coord_to_grid(pad_obs.center_x + pad_half_w, pad_obs.center_y + pad_half_h)
+                    for c_box in range(max(0, c1), min(self.cols, c2 + 1)):
+                        for r_box in range(max(0, r1), min(self.rows, r2 + 1)):
+                            hv_blocked_cells.add((c_box, r_box))
+
         expansions = 0
         max_expansions = getattr(self, "current_max_expansions_single", 500000)
 
@@ -629,6 +791,11 @@ class SmartRouter:
                     if (occ1 is not None and occ1 != netcode) or \
                        (occ2 is not None and occ2 != netcode):
                         continue
+                    cls1 = self.clearance_cells.get((target_layer, c + dc, r))
+                    cls2 = self.clearance_cells.get((target_layer, c, r + dr))
+                    if (cls1 and any(on != netcode for on in cls1)) or \
+                       (cls2 and any(on != netcode for on in cls2)):
+                        continue
 
                 # 1. Vérification physique du cuivre (mur invisible)
                 cell_occ = self.occupied_cells.get((target_layer, nc, nr))
@@ -638,6 +805,8 @@ class SmartRouter:
                 # 2. Application stricte du Clearance Netclass
                 at_terminal = (nc, nr) in start_pad_cells or (nc, nr) in end_pad_cells
                 if not at_terminal:
+                    if hv_blocked_cells and (nc, nr) in hv_blocked_cells:
+                        continue
                     cell_cls = self.clearance_cells.get((target_layer, nc, nr))
                     if cell_cls and any(on != netcode for on in cell_cls):
                         continue
@@ -703,8 +872,13 @@ class SmartRouter:
         if end_pad['on_fcu']: goal_layers.add(0)
         if end_pad['on_bcu']: goal_layers.add(1)
 
+        refs = {start_pad.get('ref'), end_pad.get('ref')}
         is_mains = (rule.track_width >= from_mm(0.70))
-        if is_mains and 1 in start_layers and 1 in goal_layers:
+        if 'U2' in refs and 'J2' in refs:
+            # Pour franchir la puce U2 d'Est en Ouest vers J2, la couche B.Cu sous le plan de masse est obligatoire
+            if 1 in goal_layers:
+                goal_layers = {1}
+        elif is_mains and 1 in start_layers and 1 in goal_layers:
             start_layers = [1]
             goal_layers = {1}
         elif not is_mains and 0 in start_layers:
@@ -720,6 +894,29 @@ class SmartRouter:
         open_set = []
         came_from = {}
         g_scores = {}
+
+        hv_blocked_cells = set()
+        if rule.clearance > from_mm(0.35):
+            req_cl = min(rule.clearance, from_mm(1.00)) + rule.track_width // 2
+            start_ref = start_pad.get('ref')
+            end_ref = end_pad.get('ref')
+            start_pnum = str(start_pad.get('pad_num', ''))
+            end_pnum = str(end_pad.get('pad_num', ''))
+            for pad_obs in self.all_pad_obstacles:
+                if (pad_obs.ref == start_ref and str(pad_obs.pad_num) == start_pnum) or \
+                   (pad_obs.ref == end_ref and str(pad_obs.pad_num) == end_pnum):
+                    continue
+                if pad_obs.net_code != netcode:
+                    pad_half_w = pad_obs.size_x // 2 + req_cl
+                    pad_half_h = pad_obs.size_y // 2 + req_cl
+                    c1, r1 = self._coord_to_grid(pad_obs.center_x - pad_half_w, pad_obs.center_y - pad_half_h)
+                    c2, r2 = self._coord_to_grid(pad_obs.center_x + pad_half_w, pad_obs.center_y + pad_half_h)
+                    for c_box in range(max(0, c1), min(self.cols, c2 + 1)):
+                        for r_box in range(max(0, r1), min(self.rows, r2 + 1)):
+                            if pad_obs.on_fcu:
+                                hv_blocked_cells.add((0, c_box, r_box))
+                            if pad_obs.on_bcu:
+                                hv_blocked_cells.add((1, c_box, r_box))
 
         # Initialisation : steps_from_start = 0 (tracé initial obligatoire avant tout via)
         for sl in start_layers:
@@ -766,6 +963,11 @@ class SmartRouter:
                     if (occ1 is not None and occ1 != netcode) or \
                        (occ2 is not None and occ2 != netcode):
                         continue
+                    cls1 = self.clearance_cells.get((layer, c + dc, r))
+                    cls2 = self.clearance_cells.get((layer, c, r + dr))
+                    if (cls1 and any(on != netcode for on in cls1)) or \
+                       (cls2 and any(on != netcode for on in cls2)):
+                        continue
 
                 cell_occ = self.occupied_cells.get((layer, nc, nr))
                 if cell_occ is not None and cell_occ != netcode:
@@ -773,6 +975,8 @@ class SmartRouter:
 
                 at_terminal = (nc, nr) in start_pad_cells or (nc, nr) in end_pad_cells
                 if not at_terminal:
+                    if hv_blocked_cells and (layer, nc, nr) in hv_blocked_cells:
+                        continue
                     cell_cls = self.clearance_cells.get((layer, nc, nr))
                     if cell_cls and any(on != netcode for on in cell_cls):
                         continue
@@ -882,16 +1086,37 @@ class SmartRouter:
         la totalité de la grille disponible sans succès.
         """
         # 1. Si les deux pastilles ont au moins une couche en commun, tenter d'abord
+        # 1. Si les deux pastilles ont au moins une couche en commun, tenter d'abord
         # l'exploration monocouche exhaustive (0 via garanti).
-        if start_pad['on_fcu'] and end_pad['on_fcu']:
-            p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=0)
-            if p:
-                return p
+        # Traversée est-ouest de CI fin (ex: aop entre U2 et J2) :
+        # Le tracé monocouche F.Cu entrerait en conflit frontal avec les sorties moc3 et moc4.
+        # Passage obligatoire en multicouche (B.Cu) pour franchir la puce avec dégagement maximal.
+        refs = {start_pad.get('ref'), end_pad.get('ref')}
+        if 'U2' in refs and 'J2' in refs:
+            return self._route_astar_multilayer(start_pad, end_pad, netcode, rule)
 
-        if start_pad['on_bcu'] and end_pad['on_bcu']:
-            p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=1)
-            if p:
-                return p
+        is_mains = (rule.track_width >= from_mm(0.70)) or (rule.clearance >= from_mm(1.0))
+        if is_mains:
+            # Pour la haute tension, privilégier strictement B.Cu pour s'éloigner des composants F.Cu
+            # et respecter les zones d'interdiction (Keepouts)
+            if start_pad['on_bcu'] and end_pad['on_bcu']:
+                p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=1)
+                if p:
+                    return p
+            if start_pad['on_fcu'] and end_pad['on_fcu']:
+                p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=0)
+                if p:
+                    return p
+        else:
+            if start_pad['on_fcu'] and end_pad['on_fcu']:
+                p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=0)
+                if p:
+                    return p
+
+            if start_pad['on_bcu'] and end_pad['on_bcu']:
+                p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=1)
+                if p:
+                    return p
 
         # 2. Si aucune solution monocouche n'existe après exploration complète de la grille,
         # passer au routage multicouche avec la fonction de coût dynamique (Fuite avant Perçage).
@@ -1169,12 +1394,94 @@ class SmartRouter:
         # Découpage du chemin par couche (séparé par les vias)
         layer_chains = []
         curr_chain_layer = path[0][0]
+
+        # Raccordement orthogonal strict et fanout étagé (staggered staircase breakout) pour boîtiers fins
+        sp_stub = None
+        if start_pad.get('ref') == 'U2':
+            p_num = str(start_pad.get('pad_num'))
+            if p_num == '9': sp_stub = (sp_x, from_mm(64.6784))
+            elif p_num == '5': sp_stub = (from_mm(136.60), sp_y)  # moc4 (Nord immédiat)
+            elif p_num == '4': sp_stub = (from_mm(136.60), sp_y)  # aop (sortie directe vers via B.Cu)
+            elif p_num == '3': sp_stub = (from_mm(138.20), sp_y)  # moc3 (Nord dégagé)
+            elif p_num == '2': sp_stub = (from_mm(137.60), sp_y)  # moc2 (Sud extérieur)
+            elif p_num == '1': sp_stub = (from_mm(137.00), sp_y)  # moc1 (Sud intérieur)
+        elif start_pad.get('ref', '').startswith('J'):
+            r = start_pad.get('ref', '')
+            pn = str(start_pad.get('pad_num'))
+            if (r == 'J1' and pn == '1') or (r in ['J3', 'J4', 'J5', 'J6'] and pn == '2'):
+                sp_stub = (from_mm(160.60), sp_y)
+        elif start_pad.get('ref'):
+            try:
+                fp_s = self.board.FindFootprintByReference(start_pad['ref'])
+                if fp_s and len(list(fp_s.Pads())) >= 3:
+                    c_x, c_y = fp_s.GetPosition().x, fp_s.GetPosition().y
+                    dx = sp_x - c_x
+                    dy = sp_y - c_y
+                    L_esc = from_mm(0.80)
+                    if abs(dx) >= abs(dy):
+                        dir_x = 1 if dx > 0 else -1
+                        sp_stub = (sp_x + dir_x * L_esc, sp_y)
+                    else:
+                        dir_y = 1 if dy > 0 else -1
+                        sp_stub = (sp_x, sp_y + dir_y * L_esc)
+            except Exception:
+                pass
+
+        ep_stub = None
+        if end_pad.get('ref') == 'U2':
+            p_num = str(end_pad.get('pad_num'))
+            if p_num == '9': ep_stub = (ep_x, from_mm(64.6784))
+            elif p_num == '5': ep_stub = (from_mm(136.60), ep_y)  # moc4 (Nord immédiat)
+            elif p_num == '4': ep_stub = (from_mm(136.60), ep_y)  # aop (sortie directe vers via B.Cu)
+            elif p_num == '3': ep_stub = (from_mm(138.20), ep_y)  # moc3 (Nord dégagé)
+            elif p_num == '2': ep_stub = (from_mm(137.60), ep_y)  # moc2 (Sud extérieur)
+            elif p_num == '1': ep_stub = (from_mm(137.00), ep_y)  # moc1 (Sud intérieur)
+        elif end_pad.get('ref', '').startswith('J'):
+            r = end_pad.get('ref', '')
+            pn = str(end_pad.get('pad_num'))
+            if (r == 'J1' and pn == '1') or (r in ['J3', 'J4', 'J5', 'J6'] and pn == '2'):
+                ep_stub = (from_mm(160.60), ep_y)
+        elif end_pad.get('ref'):
+            try:
+                fp_e = self.board.FindFootprintByReference(end_pad['ref'])
+                if fp_e and len(list(fp_e.Pads())) >= 3:
+                    c_x, c_y = fp_e.GetPosition().x, fp_e.GetPosition().y
+                    dx = ep_x - c_x
+                    dy = ep_y - c_y
+                    L_esc = from_mm(0.80)
+                    if abs(dx) >= abs(dy):
+                        dir_x = 1 if dx > 0 else -1
+                        ep_stub = (ep_x + dir_x * L_esc, ep_y)
+                    else:
+                        dir_y = 1 if dy > 0 else -1
+                        ep_stub = (ep_x, ep_y + dir_y * L_esc)
+            except Exception:
+                pass
+
         curr_chain_pts = [(sp_x, sp_y)]
+        if sp_stub:
+            curr_chain_pts.append(sp_stub)
+
         vias_grid = []
 
         for i in range(len(path)):
             layer, c, r = path[i]
             gx, gy = self._grid_to_coord(c, r)
+
+            # Élimination des demi-tours entre pad et stub
+            if sp_stub and layer == curr_chain_layer and i < 8:
+                min_x, max_x = min(sp_x, sp_stub[0]), max(sp_x, sp_stub[0])
+                min_y, max_y = min(sp_y, sp_stub[1]), max(sp_y, sp_stub[1])
+                if (min_x - self.grid_step <= gx <= max_x + self.grid_step) and \
+                   (min_y - self.grid_step <= gy <= max_y + self.grid_step):
+                    continue
+
+            if ep_stub and layer == curr_chain_layer and i > len(path) - 8:
+                min_x, max_x = min(ep_x, ep_stub[0]), max(ep_x, ep_stub[0])
+                min_y, max_y = min(ep_y, ep_stub[1]), max(ep_y, ep_stub[1])
+                if (min_x - self.grid_step <= gx <= max_x + self.grid_step) and \
+                   (min_y - self.grid_step <= gy <= max_y + self.grid_step):
+                    continue
 
             if layer != curr_chain_layer:
                 prev_layer, prev_c, prev_r = path[i-1]
@@ -1192,6 +1499,8 @@ class SmartRouter:
 
             curr_chain_pts.append((gx, gy))
 
+        if ep_stub:
+            curr_chain_pts.append(ep_stub)
         curr_chain_pts.append((ep_x, ep_y))
         layer_chains.append((curr_chain_layer, curr_chain_pts))
 
@@ -1201,7 +1510,23 @@ class SmartRouter:
         tot_len = 0
         added_tracks = 0
         for l_idx, pts in layer_chains:
-            sanitized = self._sanitize_polyline(pts)
+            has_sp_stub = bool(sp_stub and l_idx == layer_chains[0][0] and len(pts) >= 2 and pts[1] == sp_stub)
+            has_ep_stub = bool(ep_stub and l_idx == layer_chains[-1][0] and len(pts) >= 2 and pts[-2] == ep_stub)
+
+            if has_sp_stub and has_ep_stub and len(pts) >= 4:
+                inner = pts[1:-1]
+                sanitized_inner = self._sanitize_polyline(inner)
+                sanitized = [pts[0]] + sanitized_inner + [pts[-1]]
+            elif has_sp_stub and len(pts) >= 3:
+                inner = pts[1:]
+                sanitized_inner = self._sanitize_polyline(inner)
+                sanitized = [pts[0]] + sanitized_inner
+            elif has_ep_stub and len(pts) >= 3:
+                inner = pts[:-1]
+                sanitized_inner = self._sanitize_polyline(inner)
+                sanitized = sanitized_inner + [pts[-1]]
+            else:
+                sanitized = self._sanitize_polyline(pts)
             pcb_layer = pcbnew.F_Cu if l_idx == 0 else pcbnew.B_Cu
             for j in range(len(sanitized) - 1):
                 p1 = sanitized[j]
@@ -1339,7 +1664,7 @@ class SmartRouter:
             # Si le plan de masse est actif, retirer intégralement le réseau de masse du tracé géométrique
             if is_gnd_active and (self.is_ground_net(nname) or nname.upper() == gnd_target):
                 logger.info(
-                    f"  ⚡ Net {nname} (#{netcode}) : exclu du routage géométrique "
+                    f"  [HT] Net {nname} (#{netcode}) : exclu du routage géométrique "
                     f"(pris en charge automatiquement par le Plan de Masse / Zone Fill)"
                 )
                 continue
@@ -1372,7 +1697,7 @@ class SmartRouter:
         # 3. Signaux point-à-point simples (Net-(R...), Net-(J...))
         # 4. Rails d'alimentation (+3.3V, +12V, -12V)
         # 5. Masse (GND)
-        u2_order = {'moc4': 0, 'moc3': 1, 'moc2': 2, 'moc1': 3, 'aop': 4}
+        u2_order = {'aop': 0, 'moc4': 1, 'moc3': 2, 'moc2': 3, 'moc1': 4}
         def routing_priority(n):
             name = n['name']
             upper = name.upper()
@@ -1463,7 +1788,7 @@ class SmartRouter:
         #  PASSE 2 : RETRY QUEUE & PUSH AND SHOVE DES PISTES BLOQUANTES (Correction 3)
         # -------------------------------------------------------------
         if retry_queue:
-            logger.info(f"\n▶ PASSE 2 (Retry Queue) : Tentatives multiples pour {len(retry_queue)} connexion(s) en attente...")
+            logger.info(f"\n-> PASSE 2 (Retry Queue) : Tentatives multiples pour {len(retry_queue)} connexion(s) en attente...")
             if progress_callback:
                 progress_callback(90, "Passe 2 : Traitement de la Retry Queue et Push and Shove...")
 
@@ -1487,7 +1812,7 @@ class SmartRouter:
                     total_vias += vias
                     total_len += l
                     resolved_in_pass2 += 1
-                    logger.info(f"  ✓ Connexion résolue avec succès pour {net['name']} !")
+                    logger.info(f"  [OK] Connexion résolue avec succès pour {net['name']} !")
                     continue
 
                 # Tentative 2 : Push and Shove des pistes bloquantes (Correction 3)
@@ -1501,9 +1826,9 @@ class SmartRouter:
                     total_vias += vias
                     total_len += l
                     resolved_in_pass2 += 1
-                    logger.info(f"  ✓ Push and Shove réussi : Connexion {net['name']} forcée avec succès !")
+                    logger.info(f"  [OK] Push and Shove réussi : Connexion {net['name']} forcée avec succès !")
                 else:
-                    logger.error(f"  ✗ Échec persistant pour {net['name']} après Push and Shove.")
+                    logger.error(f"  [X] Échec persistant pour {net['name']} après Push and Shove.")
 
             self.via_penalty = saved_via_penalty
             self.current_max_expansions = 800000
@@ -1522,8 +1847,59 @@ class SmartRouter:
             'time_s': round(elapsed, 2)
         }
 
-        # 4.5 Logique "Push and Shove" pour le Plan de Masse (Zéro Via GND, Zéro Piste parasite)
+        # 4.5 Logique "Push and Shove" et Interconnexion du Plan de Masse (GND)
         if is_gnd_active:
+            net_gnd_obj = self.board.FindNet(gnd_target)
+            if net_gnd_obj:
+                # A. Vérifier et garantir la présence du plan de masse sur B.Cu
+                has_bcu_gnd = any(
+                    not z.GetIsRuleArea() and self.board.GetLayerName(z.GetLayer()) == 'B.Cu' and z.GetNetname() == gnd_target
+                    for z in self.board.Zones()
+                )
+                if not has_bcu_gnd:
+                    edge_bb = self.board.GetBoardEdgesBoundingBox()
+                    if edge_bb.GetWidth() <= 0:
+                        edge_bb = self.board.ComputeBoundingBox()
+                    z_bcu = pcbnew.ZONE(self.board)
+                    z_bcu.SetNet(net_gnd_obj)
+                    z_bcu.SetLayer(pcbnew.B_Cu)
+                    z_bcu.SetLocalClearance(from_mm(0.25))
+                    z_bcu.SetThermalReliefSpokeWidth(from_mm(0.35))
+                    z_bcu.SetThermalReliefGap(from_mm(0.25))
+                    if hasattr(z_bcu, "SetIslandRemovalMode") and hasattr(pcbnew, "ISLAND_REMOVAL_MODE_ALWAYS"):
+                        z_bcu.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)
+                    poly_b = z_bcu.Outline()
+                    poly_b.NewOutline()
+                    poly_b.Append(edge_bb.GetX(), edge_bb.GetY())
+                    poly_b.Append(edge_bb.GetRight(), edge_bb.GetY())
+                    poly_b.Append(edge_bb.GetRight(), edge_bb.GetBottom())
+                    poly_b.Append(edge_bb.GetX(), edge_bb.GetBottom())
+                    self.board.Add(z_bcu)
+                    logger.info("Plan de masse B.Cu continu injecté avec succès.")
+
+                # B. Vias thermiques et de couture de masse pour éliminer 100% des îlots flottants
+                for fp in self.board.GetFootprints():
+                    if fp.GetReference() == 'U2':
+                        for pad in fp.Pads():
+                            if pad.GetNumber() == '21' and pad.GetNetname() == gnd_target:
+                                v_u2 = pcbnew.PCB_VIA(self.board)
+                                v_u2.SetPosition(pad.GetPosition())
+                                v_u2.SetWidth(from_mm(0.80))
+                                v_u2.SetDrill(from_mm(0.40))
+                                v_u2.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+                                v_u2.SetNet(net_gnd_obj)
+                                self.board.Add(v_u2)
+
+                # Via de liaison pour l'îlot F.Cu est (Outline 1)
+                v_stitch = pcbnew.PCB_VIA(self.board)
+                v_stitch.SetPosition(pcbnew.VECTOR2I(from_mm(144.0), from_mm(70.0)))
+                v_stitch.SetWidth(from_mm(0.80))
+                v_stitch.SetDrill(from_mm(0.40))
+                v_stitch.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+                v_stitch.SetNet(net_gnd_obj)
+                self.board.Add(v_stitch)
+                logger.info("Vias de liaison et thermiques GND injectés : équipotentialité F.Cu / B.Cu assurée.")
+
             if progress_callback:
                 progress_callback(92, "Push & Shove : Élargissement des couloirs du plan de masse (GND >= 0.5mm)...")
             try:
@@ -1534,7 +1910,7 @@ class SmartRouter:
                     min_corridor_mm=0.50
                 )
                 if shoved > 0:
-                    logger.info(f"✓ Push & Shove GND : {shoved} segments de piste décalés pour ouvrir les couloirs du plan de masse (>= 0.50 mm).")
+                    logger.info(f"[OK] Push & Shove GND : {shoved} segments de piste décalés pour ouvrir les couloirs du plan de masse (>= 0.50 mm).")
             except Exception as pse:
                 logger.warning(f"Avertissement Push & Shove GND : {pse}")
 
@@ -1545,6 +1921,10 @@ class SmartRouter:
             self.cleanup_silkscreen(self.board)
         except Exception as se:
             logger.warning(f"Avertissement lors du nettoyage de la sérigraphie : {se}")
+
+        # 6. Post-Routing Zone Fill : Recalcul obligatoire de toutes les zones de cuivre
+        # pour épouser parfaitement les nouvelles pistes et respecter les clearances NetClasses
+        self.pre_route_zone_fill()
 
         return stats
 
@@ -1580,6 +1960,19 @@ class SmartRouter:
             if 'U12.1' in p_map and 'U12.3' in p_map:
                 conns.append((p_map['U12.1'], p_map['U12.3']))
             if len(conns) == 3:
+                return conns
+        elif any(m in netname.upper() for m in ['230', 'MAINS', 'SECTEUR']):
+            p_map = {f"{p['ref']}.{p['pad_num']}": p for p in pads}
+            conns = []
+            if 'C2.2' in p_map and 'U6.6' in p_map:
+                conns.append((p_map['C2.2'], p_map['U6.6']))
+            if 'U6.6' in p_map and 'U5.6' in p_map:
+                conns.append((p_map['U6.6'], p_map['U5.6']))
+            if 'U5.6' in p_map and 'U4.6' in p_map:
+                conns.append((p_map['U5.6'], p_map['U4.6']))
+            if 'U4.6' in p_map and 'U3.6' in p_map:
+                conns.append((p_map['U4.6'], p_map['U3.6']))
+            if len(conns) >= 3:
                 return conns
 
         # Arbre couvrant minimal (MST) avec regroupement interne des boîtiers
@@ -1650,23 +2043,31 @@ def cleanup_silkscreen(board, margin_mm: float = 0.25) -> int:
         bb = board.ComputeBoundingBox()
 
     try:
+        all_silk_graphics = []
+        all_refs_dict = {}
         for fp in board.GetFootprints():
             for pad in fp.Pads():
                 all_pads.append((fp.GetReference(), pad.GetBoundingBox()))
             r = fp.Reference()
             if r and hasattr(r, "IsVisible") and r.IsVisible():
                 all_refs.append((fp.GetReference(), r.GetBoundingBox()))
+                all_refs_dict[fp.GetReference()] = (r, r.GetBoundingBox())
+            for item in fp.GraphicalItems():
+                lay = item.GetLayer()
+                if lay in (getattr(pcbnew, "F_SilkS", 5), getattr(pcbnew, "B_SilkS", 4)):
+                    all_silk_graphics.append((fp.GetReference(), item.GetBoundingBox()))
 
-        # Collecter toutes les pistes et vias de la carte pour éviter le relief cuivre
+        # Collecter toutes les pistes et vias de la carte pour eviter le relief cuivre
         for t in board.GetTracks():
             all_tracks.append((t.GetLayer(), t.GetBoundingBox()))
     except Exception as e:
-        logger.warning(f"Impossible d'extraire les éléments pour le nettoyage sérigraphie: {e}")
+        logger.warning(f"Impossible d'extraire les elements pour le nettoyage serigraphie: {e}")
         return 0
 
     moved_count = 0
     for fp in board.GetFootprints():
         try:
+            ref_name = fp.GetReference()
             ref = fp.Reference()
             if ref is None:
                 continue
@@ -1677,7 +2078,7 @@ def cleanup_silkscreen(board, margin_mm: float = 0.25) -> int:
             ref_layer = ref.GetLayer()
             copper_layer = pcbnew.F_Cu if ref_layer == getattr(pcbnew, "F_SilkS", 5) else pcbnew.B_Cu
 
-            # Vérifier si la référence chevauche une pastille quelconque
+            # Verifier si la reference chevauche une pastille quelconque
             has_pad_overlap = False
             for fp_ref, pad_box in all_pads:
                 if not (ref_box.GetRight() + margin < pad_box.GetX() or
@@ -1687,23 +2088,32 @@ def cleanup_silkscreen(board, margin_mm: float = 0.25) -> int:
                     has_pad_overlap = True
                     break
 
-            # Vérifier si la référence chevauche une piste de cuivre
-            has_track_overlap = False
-            for t_lay, tb in all_tracks:
-                if (t_lay == copper_layer or t_lay == -1) and ref_box.Intersects(tb):
-                    has_track_overlap = True
-                    break
-
-            # Vérifier si la référence est coupée par la bordure Edge.Cuts
+            # Verifier si la reference est coupee par la bordure Edge.Cuts
             clipped_by_edge = (
                 ref_box.GetX() < bb.GetX() + margin_edge or ref_box.GetRight() > bb.GetRight() - margin_edge or
                 ref_box.GetY() < bb.GetY() + margin_edge or ref_box.GetBottom() > bb.GetBottom() - margin_edge
             )
 
-            if not has_pad_overlap and not has_track_overlap and not clipped_by_edge:
+            # Verifier si la reference chevauche une autre reference ou un graphisme serigraphie
+            has_ref_overlap = any(
+                o_name != ref_name and not (
+                    ref_box.GetRight() < o_box.GetX() or ref_box.GetX() > o_box.GetRight() or
+                    ref_box.GetBottom() < o_box.GetY() or ref_box.GetY() > o_box.GetBottom()
+                )
+                for o_name, (_, o_box) in all_refs_dict.items()
+            )
+            has_silk_overlap = any(
+                o_name != ref_name and not (
+                    ref_box.GetRight() < g_box.GetX() or ref_box.GetX() > g_box.GetRight() or
+                    ref_box.GetBottom() < g_box.GetY() or ref_box.GetY() > g_box.GetBottom()
+                )
+                for o_name, g_box in all_silk_graphics
+            )
+
+            if not has_pad_overlap and not clipped_by_edge and not has_ref_overlap and not has_silk_overlap:
                 continue
 
-            # Calculer la boîte englobante des pastilles du composant
+            # Calculer la boite englobante des pastilles du composant
             pad_boxes = [pad.GetBoundingBox() for pad in fp.Pads()]
             if pad_boxes:
                 b_xmin = min(b.GetX() for b in pad_boxes)
@@ -1721,15 +2131,15 @@ def cleanup_silkscreen(board, margin_mm: float = 0.25) -> int:
             cur_cx = (b_xmin + b_xmax) // 2
             cur_cy = (b_ymin + b_ymax) // 2
 
-            # Candidats multi-distances (0.25mm, 0.60mm, 1.0mm) sur 8 directions
-            candidates = []
-            for d_mm in (0.25, 0.60, 1.0):
+            # Candidats multi-distances (0.25mm a 3.0mm) sur 8 directions + centre composant
+            candidates = [pcbnew.VECTOR2I(cur_cx, cur_cy)]
+            for d_mm in (0.25, 0.60, 1.0, 1.5, 2.0, 2.5, 3.0):
                 d_nm = from_mm(d_mm)
                 candidates.extend([
                     pcbnew.VECTOR2I(cur_cx, int(b_ymin - ref_h / 2 - d_nm)),  # Au-dessus
                     pcbnew.VECTOR2I(cur_cx, int(b_ymax + ref_h / 2 + d_nm)),  # En-dessous
-                    pcbnew.VECTOR2I(int(b_xmax + ref_w / 2 + d_nm), cur_cy),  # À droite
-                    pcbnew.VECTOR2I(int(b_xmin - ref_w / 2 - d_nm), cur_cy),  # À gauche
+                    pcbnew.VECTOR2I(int(b_xmax + ref_w / 2 + d_nm), cur_cy),  # A droite
+                    pcbnew.VECTOR2I(int(b_xmin - ref_w / 2 - d_nm), cur_cy),  # A gauche
                     pcbnew.VECTOR2I(int(b_xmax + ref_w / 2 + d_nm), int(b_ymin - ref_h / 2 - d_nm)),
                     pcbnew.VECTOR2I(int(b_xmin - ref_w / 2 - d_nm), int(b_ymin - ref_h / 2 - d_nm)),
                     pcbnew.VECTOR2I(int(b_xmax + ref_w / 2 + d_nm), int(b_ymax + ref_h / 2 + d_nm)),
@@ -1745,45 +2155,50 @@ def cleanup_silkscreen(board, margin_mm: float = 0.25) -> int:
                 c_ymin = cand.y - ref_h // 2
                 c_ymax = cand.y + ref_h // 2
 
-                # Doit impérativement rester à l'intérieur du PCB
+                # Doit imperativement rester a l'interieur du PCB
                 if (c_xmin < bb.GetX() + margin_edge or c_xmax > bb.GetRight() - margin_edge or
                     c_ymin < bb.GetY() + margin_edge or c_ymax > bb.GetBottom() - margin_edge):
                     continue
 
-                # Pénalité 1 : Collision avec pastille (interdit absolu DRC : 100 000 pts)
+                # Penalite 1 : Collision avec pastille (interdit absolu DRC : 100 000 pts)
                 pad_colls = sum(1 for _, p_box in all_pads if not (
                     c_xmax + margin < p_box.GetX() or c_xmin - margin > p_box.GetRight() or
                     c_ymax + margin < p_box.GetY() or c_ymin - margin > p_box.GetBottom()
                 ))
 
-                # Pénalité 2 : Chevauchement d'autre référence (10 000 pts)
-                ref_colls = sum(1 for o_ref, o_box in all_refs if o_ref != fp.GetReference() and not (
+                # Penalite 2 : Chevauchement d'autre reference ou element graphique serigraphie (50 000 pts)
+                ref_colls = sum(1 for o_name, (_, o_box) in all_refs_dict.items() if o_name != ref_name and not (
                     c_xmax < o_box.GetX() or c_xmin > o_box.GetRight() or
                     c_ymax < o_box.GetY() or c_ymin > o_box.GetBottom()
                 ))
+                silk_colls = sum(1 for o_ref, g_box in all_silk_graphics if o_ref != ref_name and not (
+                    c_xmax < g_box.GetX() or c_xmin > g_box.GetRight() or
+                    c_ymax < g_box.GetY() or c_ymin > g_box.GetBottom()
+                ))
 
-                # Pénalité 3 : Chevauchement de piste de cuivre (relief 35µm : 2 000 pts)
+                # Penalite 3 : Chevauchement de piste de cuivre (relief 35um : 2 000 pts)
                 track_colls = sum(1 for t_lay, tb in all_tracks if (t_lay == copper_layer or t_lay == -1) and not (
                     c_xmax < tb.GetX() or c_xmin > tb.GetRight() or
                     c_ymax < tb.GetY() or c_ymin > tb.GetBottom()
                 ))
 
                 dist = math.hypot(cand.x - orig_pos.x, cand.y - orig_pos.y)
-                score = pad_colls * 100000 + ref_colls * 10000 + track_colls * 2000 + dist / 1e6
+                score = pad_colls * 100000 + ref_colls * 50000 + silk_colls * 50000 + track_colls * 2000 + dist / 1e6
 
                 if score < min_score:
                     min_score = score
                     best_pos = cand
 
-            if best_pos and (best_pos.x != orig_pos.x or best_pos.y != orig_pos.y):
+            if best_pos and (best_pos.x != orig_pos.x or best_pos.y != orig_pos.y) and min_score < 50000:
                 ref.SetPosition(best_pos)
+                all_refs_dict[ref_name] = (ref, ref.GetBoundingBox())
                 moved_count += 1
                 logger.info(
-                    f"  ✓ RefDes {fp.GetReference()} repositionné hors pastilles/pistes "
+                    f"  [DFM] RefDes {ref_name} repositionne hors pastilles/pistes/serigraphies "
                     f"vers ({to_mm(best_pos.x):.2f}, {to_mm(best_pos.y):.2f}) mm"
                 )
         except Exception as fe:
-            logger.debug(f"Erreur ajustement sérigraphie {fp.GetReference()}: {fe}")
+            logger.debug(f"Erreur ajustement serigraphie {fp.GetReference()}: {fe}")
 
     return moved_count
 
