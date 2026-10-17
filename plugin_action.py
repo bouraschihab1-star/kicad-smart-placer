@@ -322,6 +322,13 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
                     progress_callback(55, "Lancement du Smart Router A*...")
 
                 try:
+                    # Phase 6.9 : Ingénierie Haute Tension & Adaptation DFM
+                    try:
+                        from .advanced_electronics import HighVoltageClearanceManager
+                        HighVoltageClearanceManager.apply_footprint_clearance_adaptation(board)
+                    except Exception as hve:
+                        logger.debug(f"Avertissement adaptation HT : {hve}")
+
                     from .router import SmartRouter
                     if do_clean_tracks:
                         SmartRouter.clean_board_tracks(board)
@@ -395,6 +402,15 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
                     progress_callback(97, f"Génération plan de masse ({gnd_net}) sur {gnd_layers}...")
                 try:
                     add_ground_plane(board, layers=gnd_layers, net_name=gnd_net)
+                    # Équilibrage thermique des CMS (anti-tombstoning DFM)
+                    try:
+                        from .advanced_electronics import TombstoningThermalEqualizer, GroundViaStitcher
+                        TombstoningThermalEqualizer.enforce_thermal_symmetry_on_passives(board)
+                        if len(gnd_layers) > 1 and "F.Cu" in gnd_layers and "B.Cu" in gnd_layers:
+                            GroundViaStitcher.stitch_ground_planes(board, net_name=gnd_net, pitch_mm=6.0)
+                            fill_all_zones(board)
+                    except Exception as dfm_err:
+                        logger.debug(f"Avertissement modules DFM/CEM : {dfm_err}")
                 except Exception as gnd_err:
                     logger.warning(f"Erreur lors de la création du plan de masse : {gnd_err}")
 
