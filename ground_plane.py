@@ -112,17 +112,65 @@ def add_ground_plane(
         poly.Append(x2, y2)
         poly.Append(x1, y2)
 
+        if hasattr(zone, "SetIslandRemovalMode") and hasattr(pcbnew, "ISLAND_REMOVAL_MODE_ALWAYS"):
+            zone.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)
+
         board.Add(zone)
         created_zones.append(zone)
 
-    # 5. Remplir le cuivre (Zone Filler)
+    # 5. Ponts et vias de piquage GND (stitching vias)
+    gnd_code = net.GetNetCode()
+
+    # Pont horizontal reliant J8.1 au plan de masse F.Cu
+    existing_tracks = {(t.GetStart().x, t.GetStart().y, t.GetEnd().x, t.GetEnd().y) 
+                       for t in board.GetTracks() if t.GetClass() == "PCB_TRACK"}
+    
+    bridge_start = pcbnew.VECTOR2I(int(round(98.91 * 1e6)), int(round(84.335 * 1e6)))
+    bridge_end = pcbnew.VECTOR2I(int(round(99.40 * 1e6)), int(round(84.335 * 1e6)))
+    if (bridge_start.x, bridge_start.y, bridge_end.x, bridge_end.y) not in existing_tracks:
+        for fp in board.GetFootprints():
+            if fp.GetReference() == "J8":
+                for pad in fp.Pads():
+                    if pad.GetNumber() == "1" and pad.GetNetCode() == gnd_code:
+                        t_bridge = pcbnew.PCB_TRACK(board)
+                        t_bridge.SetStart(bridge_start)
+                        t_bridge.SetEnd(bridge_end)
+                        t_bridge.SetWidth(from_mm(0.25))
+                        t_bridge.SetLayer(pcbnew.F_Cu)
+                        t_bridge.SetNetCode(gnd_code)
+                        board.Add(t_bridge)
+                        break
+                break
+
+    # Vias de piquage GND entre F.Cu et B.Cu pour interconnecter les plans et ilots
+    existing_vias = {(v.GetPosition().x, v.GetPosition().y) 
+                     for v in board.GetTracks() if v.GetClass() == "PCB_VIA"}
+    
+    stitching_coords = [
+        (112.76, 87.08),
+        (103.63, 74.81),
+        (104.57, 70.83),
+        (98.0, 91.0)
+    ]
+    for vx, vy in stitching_coords:
+        px, py = int(round(vx * 1e6)), int(round(vy * 1e6))
+        if (px, py) not in existing_vias:
+            v = pcbnew.PCB_VIA(board)
+            v.SetPosition(pcbnew.VECTOR2I(px, py))
+            v.SetWidth(from_mm(0.80))
+            v.SetDrill(from_mm(0.40))
+            v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+            v.SetNetCode(gnd_code)
+            board.Add(v)
+
+    # 6. Remplir le cuivre (Zone Filler)
     import threading
     if threading.current_thread() is threading.main_thread():
         fill_all_zones(board)
     else:
-        logger.info("  (Remplissage final du cuivre planifié sur le thread principal)")
+        logger.info("  (Remplissage final du cuivre planifie sur le thread principal)")
 
-    logger.info(f"✓ Plan de masse activé : {len(created_zones)} zone(s) GND créée(s) sur {layers}.")
+    logger.info(f"Plan de masse active : {len(created_zones)} zone(s) GND creee(s) sur {layers}.")
     return created_zones
 
 
