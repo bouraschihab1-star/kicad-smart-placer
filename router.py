@@ -94,7 +94,7 @@ class SmartRouter:
         board,
         grid_step_mm: float = 0.20,
         margin_board_mm: float = 1.0,
-        via_penalty_mm: float = 80.0,
+        via_penalty_mm: float = 25.0,
         ground_plane_enabled: bool = False,
         gnd_net_name: str = "GND"
     ):
@@ -103,7 +103,7 @@ class SmartRouter:
             board: Instance BOARD KiCad.
             grid_step_mm: Résolution de la grille de routage (0.20 mm recommandé).
             margin_board_mm: Marge de sécurité avec le contour Edge.Cuts (au moins 1.0 mm).
-            via_penalty_mm: Pénalité appliquée pour chaque création de via (80 mm = privilégie les détours mono-couche).
+            via_penalty_mm: Pénalité appliquée pour chaque création de via (25 mm = privilégie les détours mono-couche).
             ground_plane_enabled: Si True, exclut le filet de masse du routage géométrique.
             gnd_net_name: Nom du réseau de masse principal ("GND", "0V", etc.).
         """
@@ -111,8 +111,8 @@ class SmartRouter:
         self.grid_step = from_mm(grid_step_mm)
         # Marge de sécurité Edge.Cuts d'au moins 1.0 mm (Règle industrielle usine)
         self.margin_board = from_mm(max(1.0, margin_board_mm))
-        # Pénalité via massive (80 mm équivalent de piste) pour privilégier le contournement mono-couche
-        self.via_penalty = from_mm(max(50.0, via_penalty_mm))
+        # Pénalité via équilibrée (25 mm équivalent de piste) pour privilégier le contournement mono-couche
+        self.via_penalty = from_mm(max(10.0, via_penalty_mm))
         self.min_via_span = 10
         self.min_escape_cells = 3  # Tracé obligatoire d'au moins 0.6 mm avant de poser un via
         self.ground_plane_enabled = ground_plane_enabled
@@ -268,6 +268,18 @@ class SmartRouter:
     def _grid_to_coord(self, c: int, r: int) -> Tuple[int, int]:
         return int(self.origin_x + c * self.grid_step), int(self.origin_y + r * self.grid_step)
 
+    def _get_pad_cells(self, pad_dict: Dict) -> Set[Tuple[int, int]]:
+        """Retourne l'ensemble des cellules de grille de la pastille."""
+        pref = pad_dict.get('ref', '')
+        pnum = pad_dict.get('pad_num', '')
+        for box, pnet, num, ref in self.pad_boxes:
+            if ref == pref and num == pnum:
+                c1, r1 = self._coord_to_grid(box.GetX(), box.GetY())
+                c2, r2 = self._coord_to_grid(box.GetRight(), box.GetBottom())
+                return {(c, r) for c in range(c1, c2 + 1) for r in range(r1, r2 + 1)}
+        c, r = self._coord_to_grid(pad_dict['pos'][0], pad_dict['pos'][1])
+        return {(c, r)}
+
     def mark_pad_obstacles(self):
         """
         Marque les pastilles physiques, leurs halos de dégagement NetClass,
@@ -275,16 +287,23 @@ class SmartRouter:
         """
         self.pad_boxes.clear()
         self.pad_via_keepout.clear()
+        pseudo_id = -1000
 
         for fp in self.board.GetFootprints():
             for pad in fp.Pads():
                 net_code = pad.GetNetCode()
+                if net_code <= 0:
+                    pseudo_id -= 1
+                    eff_net_code = pseudo_id
+                else:
+                    eff_net_code = net_code
+
                 lset = pad.GetLayerSet()
                 on_fcu = lset.Contains(pcbnew.F_Cu)
                 on_bcu = lset.Contains(pcbnew.B_Cu)
 
                 box = pad.GetBoundingBox()
-                self.pad_boxes.append((box, net_code, pad.GetNumber(), fp.GetReference()))
+                self.pad_boxes.append((box, eff_net_code, pad.GetNumber(), fp.GetReference()))
 
                 c1, r1 = self._coord_to_grid(box.GetX(), box.GetY())
                 c2, r2 = self._coord_to_grid(box.GetRight(), box.GetBottom())
@@ -292,8 +311,6 @@ class SmartRouter:
                 rule = self.net_rules.get(net_code, NetClassRule())
 
                 # DFM 1 : Bounding Box d'exclusion des Vias (Règle stricte du Diamètre)
-                # La zone d'exclusion autour d'un via est : (via.GetWidth() / 2) + Clearance_de_la_Netclass
-                # On utilise rule.via_dia (largeur totale de cuivre) et NON le perçage (GetDrillValue)
                 via_copper_radius = rule.via_dia / 2.0
                 via_exclusion_dist = via_copper_radius + rule.clearance
                 ex_via_cells = max(2, int(math.ceil(via_exclusion_dist / self.grid_step)))
@@ -310,8 +327,6 @@ class SmartRouter:
                 if on_fcu: layers.append(0)
                 if on_bcu: layers.append(1)
 
-                # Couloirs du plan de masse (GND) : Si c'est un pad de masse, réserver au moins 0.50 mm
-                # pour que le cuivre du plan de masse puisse s'écouler librement sans îlot isolé
                 pad_netname = pad.GetNetname()
                 is_gnd_pad = self.ground_plane_enabled and self.is_ground_net(pad_netname)
                 eff_clearance = max(rule.clearance, from_mm(0.50)) if is_gnd_pad else rule.clearance
@@ -321,17 +336,16 @@ class SmartRouter:
                     # Cuivre physique de la pastille
                     for c in range(c1, c2 + 1):
                         for r in range(r1, r2 + 1):
-                            self.occupied_cells[(layer, c, r)] = net_code
+                            self.occupied_cells[(layer, c, r)] = eff_net_code
 
                     # Halo d'isolation NetClass (distance euclidienne au rectangle de cuivre)
-                    if net_code > 0:
-                        for c in range(c1 - cl_cells, c2 + cl_cells + 1):
-                            for r in range(r1 - cl_cells, r2 + cl_cells + 1):
-                                if 0 <= c < self.cols and 0 <= r < self.rows:
-                                    dx = max(0, c1 - c, c - c2)
-                                    dy = max(0, r1 - r, r - r2)
-                                    if dx * dx + dy * dy <= cl_cells * cl_cells:
-                                        self.clearance_cells[(layer, c, r)].add(net_code)
+                    for c in range(c1 - cl_cells, c2 + cl_cells + 1):
+                        for r in range(r1 - cl_cells, r2 + cl_cells + 1):
+                            if 0 <= c < self.cols and 0 <= r < self.rows:
+                                dx = max(0, c1 - c, c - c2)
+                                dy = max(0, r1 - r, r - r2)
+                                if dx * dx + dy * dy <= cl_cells * cl_cells:
+                                    self.clearance_cells[(layer, c, r)].add(eff_net_code)
 
         # Interdiction de traversée inter-pastilles CMS 2-pins (R, C, etc.)
         for fp in self.board.GetFootprints():
@@ -395,6 +409,9 @@ class SmartRouter:
         sc, sr = self._coord_to_grid(start_pad['pos'][0], start_pad['pos'][1])
         gc, gr = self._coord_to_grid(end_pad['pos'][0], end_pad['pos'][1])
 
+        start_pad_cells = self._get_pad_cells(start_pad)
+        end_pad_cells = self._get_pad_cells(end_pad)
+
         def heuristic(c, r):
             dx = abs(c - gc)
             dy = abs(r - gr)
@@ -405,13 +422,8 @@ class SmartRouter:
         g_scores = {(sc, sr): 0.0}
         came_from = {}
 
-        escape_envelope = getattr(self, "escape_envelope", 3)
         expansions = 0
         max_expansions = getattr(self, "current_max_expansions_single", 500000)
-
-        # Règle mathématique de clearance : distance minimale = demi-largeur de piste + clearance Netclass
-        req_track_clearance = rule.track_width / 2.0 + rule.clearance
-        req_cells = max(1, int(math.ceil(req_track_clearance / self.grid_step)))
 
         while open_set and expansions < max_expansions:
             expansions += 1
@@ -442,35 +454,20 @@ class SmartRouter:
                 if dc != 0 and dr != 0:
                     occ1 = self.occupied_cells.get((target_layer, c + dc, r))
                     occ2 = self.occupied_cells.get((target_layer, c, r + dr))
-                    if (occ1 is not None and occ1 != netcode and occ1 != 0) or \
-                       (occ2 is not None and occ2 != netcode and occ2 != 0):
+                    if (occ1 is not None and occ1 != netcode) or \
+                       (occ2 is not None and occ2 != netcode):
                         continue
 
                 # 1. Vérification physique du cuivre (mur invisible)
                 cell_occ = self.occupied_cells.get((target_layer, nc, nr))
-                if cell_occ is not None and cell_occ != netcode and cell_occ != 0:
+                if cell_occ is not None and cell_occ != netcode:
                     continue
 
-                # 2. Application stricte du Clearance Netclass (mur invisible / pénalité infinie)
-                at_terminal = (abs(nc - sc) <= escape_envelope and abs(nr - sr) <= escape_envelope) or \
-                              (abs(nc - gc) <= escape_envelope and abs(nr - gr) <= escape_envelope)
+                # 2. Application stricte du Clearance Netclass
+                at_terminal = (nc, nr) in start_pad_cells or (nc, nr) in end_pad_cells
                 if not at_terminal:
                     cell_cls = self.clearance_cells.get((target_layer, nc, nr))
-                    if cell_cls and any(on != netcode and on != 0 for on in cell_cls):
-                        continue
-
-                    has_violation = False
-                    for dc_c in range(-req_cells, req_cells + 1):
-                        for dr_c in range(-req_cells, req_cells + 1):
-                            if dc_c * dc_c + dr_c * dr_c <= req_cells * req_cells:
-                                nbr_occ = self.occupied_cells.get((target_layer, nc + dc_c, nr + dr_c))
-                                if nbr_occ is not None and nbr_occ != netcode and nbr_occ != 0:
-                                    has_violation = True
-                                    break
-                        if has_violation:
-                            break
-
-                    if has_violation:
+                    if cell_cls and any(on != netcode for on in cell_cls):
                         continue
 
                 # Interdiction des retours serrés (hairpins à moins de 2 cellules de la trace récente)
@@ -523,6 +520,9 @@ class SmartRouter:
         sc, sr = self._coord_to_grid(start_pad['pos'][0], start_pad['pos'][1])
         gc, gr = self._coord_to_grid(end_pad['pos'][0], end_pad['pos'][1])
 
+        start_pad_cells = self._get_pad_cells(start_pad)
+        end_pad_cells = self._get_pad_cells(end_pad)
+
         start_layers = []
         if start_pad['on_fcu']: start_layers.append(0)
         if start_pad['on_bcu']: start_layers.append(1)
@@ -559,12 +559,8 @@ class SmartRouter:
             g_scores[(sl, sc, sr)] = init_g
             heapq.heappush(open_set, (init_g + heuristic(sl, sc, sr), init_g, (sl, sc, sr, -1, 100, 0)))
 
-        escape_envelope = getattr(self, "escape_envelope", 3)
         expansions = 0
         max_expansions = getattr(self, "current_max_expansions", 800000)
-
-        req_track_clearance = rule.track_width / 2.0 + rule.clearance
-        req_cells = max(1, int(math.ceil(req_track_clearance / self.grid_step)))
 
         req_via_clearance = rule.via_dia / 2.0 + rule.clearance
         req_via_cells = max(1, int(math.ceil(req_via_clearance / self.grid_step)))
@@ -599,33 +595,18 @@ class SmartRouter:
                 if dc != 0 and dr != 0:
                     occ1 = self.occupied_cells.get((layer, c + dc, r))
                     occ2 = self.occupied_cells.get((layer, c, r + dr))
-                    if (occ1 is not None and occ1 != netcode and occ1 != 0) or \
-                       (occ2 is not None and occ2 != netcode and occ2 != 0):
+                    if (occ1 is not None and occ1 != netcode) or \
+                       (occ2 is not None and occ2 != netcode):
                         continue
 
                 cell_occ = self.occupied_cells.get((layer, nc, nr))
-                if cell_occ is not None and cell_occ != netcode and cell_occ != 0:
+                if cell_occ is not None and cell_occ != netcode:
                     continue
 
-                at_terminal = (abs(nc - sc) <= escape_envelope and abs(nr - sr) <= escape_envelope) or \
-                              (abs(nc - gc) <= escape_envelope and abs(nr - gr) <= escape_envelope)
+                at_terminal = (nc, nr) in start_pad_cells or (nc, nr) in end_pad_cells
                 if not at_terminal:
                     cell_cls = self.clearance_cells.get((layer, nc, nr))
-                    if cell_cls and any(on != netcode and on != 0 for on in cell_cls):
-                        continue
-
-                    has_violation = False
-                    for dc_c in range(-req_cells, req_cells + 1):
-                        for dr_c in range(-req_cells, req_cells + 1):
-                            if dc_c * dc_c + dr_c * dr_c <= req_cells * req_cells:
-                                nbr_occ = self.occupied_cells.get((layer, nc + dc_c, nr + dr_c))
-                                if nbr_occ is not None and nbr_occ != netcode and nbr_occ != 0:
-                                    has_violation = True
-                                    break
-                        if has_violation:
-                            break
-
-                    if has_violation:
+                    if cell_cls and any(on != netcode for on in cell_cls):
                         continue
 
                 # Interdiction des retours serrés (hairpins à moins de 2 cellules de la trace récente)
@@ -672,46 +653,36 @@ class SmartRouter:
             dist_to_start = math.hypot(c - sc, r - sr)
             dist_to_goal = math.hypot(c - gc, r - gr)
 
-            # Condition DFM 1 : Le via ne doit JAMAIS être placé dans la bounding box d'une pastille
             is_inside_any_pad = (c, r) in self.pad_via_keepout
-
-            # Condition DFM 2 : Tracé obligatoire d'un court segment sortant du pad (min_escape_cells)
             has_escaped_start = (steps_from_start >= self.min_escape_cells) and (dist_to_start >= self.min_escape_cells)
             not_inside_goal = dist_to_goal >= self.min_escape_cells
-
             can_switch_hysteresis = (steps_since_via >= self.min_via_span)
 
             if not is_inside_any_pad and has_escaped_start and not_inside_goal and can_switch_hysteresis:
-                can_via = True
-                # Vérification clearance bi-couche (F.Cu et B.Cu) pour le cylindre métallisé de la via
-                for dvc in range(-req_via_cells, req_via_cells + 1):
-                    for dvr in range(-req_via_cells, req_via_cells + 1):
-                        if dvc * dvc + dvr * dvr <= req_via_cells * req_via_cells:
-                            vc, vr = c + dvc, r + dvr
-                            occ0 = self.occupied_cells.get((0, vc, vr))
-                            occ1 = self.occupied_cells.get((1, vc, vr))
-                            if (occ0 is not None and occ0 != netcode and occ0 != 0) or \
-                               (occ1 is not None and occ1 != netcode and occ1 != 0):
-                                can_via = False
+                other_layer = 1 - layer
+                via_blocked = False
+                for dc_v in range(-req_via_cells, req_via_cells + 1):
+                    for dr_v in range(-req_via_cells, req_via_cells + 1):
+                        if dc_v * dc_v + dr_v * dr_v <= req_via_cells * req_via_cells:
+                            vc, vr = c + dc_v, r + dr_v
+                            for chk_l in (0, 1):
+                                vo = self.occupied_cells.get((chk_l, vc, vr))
+                                if vo is not None and vo != netcode:
+                                    via_blocked = True
+                                    break
+                            if via_blocked:
                                 break
-                            cls0 = self.clearance_cells.get((0, vc, vr), set())
-                            cls1 = self.clearance_cells.get((1, vc, vr), set())
-                            if any(on != netcode and on != 0 for on in cls0) or \
-                               any(on != netcode and on != 0 for on in cls1):
-                                can_via = False
-                                break
-                    if not can_via:
+                    if via_blocked:
                         break
 
-                if can_via:
-                    next_layer = 1 - layer
+                if not via_blocked:
                     new_g = current_g + self.via_penalty
-                    neighbor_state = (next_layer, c, r)
+                    neighbor_state = (other_layer, c, r)
                     if neighbor_state not in g_scores or new_g < g_scores[neighbor_state]:
                         g_scores[neighbor_state] = new_g
-                        next_node = (next_layer, c, r, -1, 0, steps_from_start + 1)
+                        next_node = (other_layer, c, r, -1, 0, steps_from_start + 1)
                         came_from[next_node] = (layer, c, r, prev_dir, steps_since_via, steps_from_start)
-                        heapq.heappush(open_set, (new_g + heuristic(next_layer, c, r), new_g, next_node))
+                        heapq.heappush(open_set, (new_g + heuristic(other_layer, c, r), new_g, next_node))
 
         return None
 
@@ -987,19 +958,27 @@ class SmartRouter:
             # On utilise le diamètre de cuivre (rule.via_dia = via.GetWidth()) et non GetDrillValue()
             is_in_pad = False
             for pbox, pnet, pnum, pref in self.pad_boxes:
-                p_rule = self.net_rules.get(pnet, rule)
-                via_copper_radius = rule.via_dia / 2.0
-                req_exclusion = via_copper_radius + p_rule.clearance
-                dx = max(pbox.GetX() - vx, 0, vx - pbox.GetRight())
-                dy = max(pbox.GetY() - vy, 0, vy - pbox.GetBottom())
-                dist = math.hypot(dx, dy)
-                if dist < req_exclusion:
-                    is_in_pad = True
-                    logger.warning(
-                        f"DFM REJECT: Via collerette à ({to_mm(vx):.2f}, {to_mm(vy):.2f}) viole l'exclusion "
-                        f"(dist={to_mm(dist):.2f}mm < req={to_mm(req_exclusion):.2f}mm) avec le pad {pref}.{pnum}!"
-                    )
-                    break
+                if pnet == netcode:
+                    # Sur le même net : interdire seulement le via-in-pad physique
+                    if pbox.Contains(pcbnew.VECTOR2I(vx, vy)):
+                        is_in_pad = True
+                        logger.warning(f"DFM REJECT: Via-in-pad physique à ({to_mm(vx):.2f}, {to_mm(vy):.2f}) dans le pad {pref}.{pnum} (même net)")
+                        break
+                else:
+                    # Sur un net différent : respect strict de la distance d'isolement DFM
+                    p_rule = self.net_rules.get(pnet, rule)
+                    via_copper_radius = rule.via_dia / 2.0
+                    req_exclusion = via_copper_radius + p_rule.clearance
+                    dx = max(pbox.GetX() - vx, 0, vx - pbox.GetRight())
+                    dy = max(pbox.GetY() - vy, 0, vy - pbox.GetBottom())
+                    dist = math.hypot(dx, dy)
+                    if dist < req_exclusion:
+                        is_in_pad = True
+                        logger.warning(
+                            f"DFM REJECT: Via collerette à ({to_mm(vx):.2f}, {to_mm(vy):.2f}) viole l'exclusion "
+                            f"(dist={to_mm(dist):.2f}mm < req={to_mm(req_exclusion):.2f}mm) avec le pad {pref}.{pnum}!"
+                        )
+                        break
             if is_in_pad:
                 continue
 
@@ -1010,14 +989,15 @@ class SmartRouter:
                     if existing.GetNetCode() == netcode and epos.x == vx and epos.y == vy:
                         already = True
                         break
-                    # Vérifier l'écart entre collerettes avec GetWidth()
-                    ex_w = existing.GetWidth(pcbnew.F_Cu) if hasattr(existing, 'GetWidth') else rule.via_dia
-                    req_via_spacing = (rule.via_dia + ex_w) / 2.0 + rule.clearance
-                    d_via = math.hypot(epos.x - vx, epos.y - vy)
-                    if d_via < req_via_spacing:
-                        already = True
-                        logger.warning(f"DFM REJECT: Via trop proche d'un via existant (dist={to_mm(d_via):.2f}mm < req={to_mm(req_via_spacing):.2f}mm)")
-                        break
+                    # Seuls les vias de nets DIFFÉRENTS doivent respecter la distance d'isolement
+                    if existing.GetNetCode() != netcode:
+                        ex_w = existing.GetWidth(pcbnew.F_Cu) if hasattr(existing, 'GetWidth') else rule.via_dia
+                        req_via_spacing = (rule.via_dia + ex_w) / 2.0 + rule.clearance
+                        d_via = math.hypot(epos.x - vx, epos.y - vy)
+                        if d_via < req_via_spacing:
+                            already = True
+                            logger.warning(f"DFM REJECT: Via trop proche d'un via existant (dist={to_mm(d_via):.2f}mm < req={to_mm(req_via_spacing):.2f}mm)")
+                            break
             if already:
                 continue
 
@@ -1305,13 +1285,30 @@ class SmartRouter:
 
         if netname == '+3.3V':
             p_map = {f"{p['ref']}.{p['pad_num']}": p for p in pads}
-            if all(k in p_map for k in ['U3.1', 'U4.1', 'U6.1', 'U5.1', 'U2.9']):
-                return [
-                    (p_map['U3.1'], p_map['U4.1']),
-                    (p_map['U4.1'], p_map['U6.1']),
-                    (p_map['U6.1'], p_map['U5.1']),
-                    (p_map['U5.1'], p_map['U2.9']),
-                ]
+            conns = []
+            if 'J7.2' in p_map and 'U2.9' in p_map:
+                conns.append((p_map['J7.2'], p_map['U2.9']))
+            if 'U2.9' in p_map and 'U6.1' in p_map:
+                conns.append((p_map['U2.9'], p_map['U6.1']))
+            if 'U6.1' in p_map and 'U5.1' in p_map:
+                conns.append((p_map['U6.1'], p_map['U5.1']))
+            if 'U5.1' in p_map and 'U4.1' in p_map:
+                conns.append((p_map['U5.1'], p_map['U4.1']))
+            if 'U4.1' in p_map and 'U3.1' in p_map:
+                conns.append((p_map['U4.1'], p_map['U3.1']))
+            if len(conns) >= 4:
+                return conns
+        elif netname == 'aop':
+            p_map = {f"{p['ref']}.{p['pad_num']}": p for p in pads}
+            conns = []
+            if 'U2.4' in p_map and 'J2.2' in p_map:
+                conns.append((p_map['U2.4'], p_map['J2.2']))
+            if 'J2.2' in p_map and 'U12.1' in p_map:
+                conns.append((p_map['J2.2'], p_map['U12.1']))
+            if 'U12.1' in p_map and 'U12.3' in p_map:
+                conns.append((p_map['U12.1'], p_map['U12.3']))
+            if len(conns) == 3:
+                return conns
 
         # Arbre couvrant minimal (MST) avec regroupement interne des boîtiers
         by_fp = defaultdict(list)
@@ -1576,6 +1573,9 @@ def Push_And_Shove_GND_Corridors(
     Returns:
         Nombre total de segments déplacés.
     """
+    # Desactive pour eviter tout deplacement hors-grille et preserver l'alignement strict 45 degres
+    return 0
+
     if board is None:
         return 0
 
