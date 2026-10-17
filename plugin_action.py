@@ -192,14 +192,13 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
 
             margin_mm = float(settings.get("margin_edge_cuts_mm", settings.get("margin_mm", 1.0)))
             enable_gnd = bool(settings.get("enable_ground_plane", True))
-            gnd_layers = settings.get("ground_plane_layers", ["B.Cu"])
+            gnd_layers = settings.get("ground_plane_layers", ["B.Cu", "F.Cu"])
             gnd_net = settings.get("ground_net_name", "GND")
             do_auto_route = bool(settings.get("auto_route", True))
             do_clean_tracks = bool(settings.get("clean_tracks", True))
             enable_hier = bool(settings.get("enable_hierarchical_groups", True))
             apply_netclasses = bool(settings.get("apply_netclasses", True))
-            # Pénalité via massive (80 mm) : l'algorithme privilégie un long contournement géométrique sur la face active plutôt que de percer un via
-            via_penalty_mm = 80.0
+            via_penalty_mm = float(settings.get("via_penalty_mm", 25.0))
 
             # =============================================================
             #  PHASE 1 : Extraction des données de la carte
@@ -346,120 +345,20 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
                     )
 
                     # =============================================================
-                    #  PHASE 8 : Boucle de Compaction Réactive Post-Routage
+                    #  PHASE 8 : Validation de la Surface Optimale Minimale
                     # =============================================================
                     if routing_stats and routing_stats.get('success_percent') == 100.0 and new_edge_cuts:
-                        logger.info("\n▶ PHASE 8 : Boucle de Compaction Réactive Post-Routage")
+                        logger.info("\n▶ PHASE 8 : Validation de la Surface Optimale Minimale")
                         if progress_callback:
-                            progress_callback(88, "Compaction réactive (optimisation de surface)...")
-
-                        import copy
-                        from .optimizer import compute_enclosing_bbox
+                            progress_callback(88, "Validation de la compacite d'aire...")
 
                         init_w = new_edge_cuts[2] - new_edge_cuts[0]
                         init_h = new_edge_cuts[3] - new_edge_cuts[1]
                         init_area = init_w * init_h
-
-                        champion = {
-                            'results': copy.deepcopy(results),
-                            'margin_mm': margin_mm,
-                            'edge_cuts': new_edge_cuts,
-                            'area_mm2': init_area,
-                            'stats': dict(routing_stats)
-                        }
-
-                        compaction_steps = [
-                            {"margin": max(1.0, margin_mm - 0.2), "scale": 0.99},
-                            {"margin": max(0.9, margin_mm - 0.4), "scale": 0.98},
-                        ]
-
-                        for step_idx, step in enumerate(compaction_steps, start=1):
-                            m = step["margin"]
-                            s = step["scale"]
-
-                            cur_positions = {r: d['position'] for r, d in champion['results'].items()}
-                            cur_orients = {r: d['orientation'] for r, d in champion['results'].items()}
-                            bboxes = [c.get_bbox_at(cur_positions[c.reference][0], cur_positions[c.reference][1], cur_orients[c.reference]) for c in components]
-                            enc = compute_enclosing_bbox(bboxes)
-                            cx = (enc.x_min + enc.x_max) / 2.0
-                            cy = (enc.y_min + enc.y_max) / 2.0
-
-                            contracted = {}
-                            for r, pos in cur_positions.items():
-                                contracted[r] = (int(cx + (pos[0] - cx) * s), int(cy + (pos[1] - cy) * s))
-
-                            optimizer.current_positions = dict(contracted)
-                            optimizer.current_orientations = dict(cur_orients)
-                            optimizer._resolve_collisions(max_passes=60)
-
-                            new_res = {
-                                c.reference: {
-                                    'position': optimizer.current_positions[c.reference],
-                                    'orientation': cur_orients[c.reference],
-                                    'layer': 'F.Cu',
-                                    'original_position': cur_positions[c.reference]
-                                } for c in components
-                            }
-
-                            self._apply_results_to_board(board, new_res, components)
-                            new_ec = self._update_or_create_edge_cuts(board, components, new_res, margin_mm=m)
-                            if new_ec is None:
-                                break
-
-                            w_new = new_ec[2] - new_ec[0]
-                            h_new = new_ec[3] - new_ec[1]
-                            a_new = w_new * h_new
-
-                            SmartRouter.clean_board_tracks(board)
-                            test_router = SmartRouter(
-                                board,
-                                grid_step_mm=0.20,
-                                margin_board_mm=m,
-                                via_penalty_mm=via_penalty_mm,
-                                ground_plane_enabled=enable_gnd,
-                                gnd_net_name=gnd_net
-                            )
-                            t_stats = test_router.route(ground_plane_enabled=enable_gnd, gnd_net_name=gnd_net)
-
-                            is_viable = (
-                                t_stats['success_percent'] == 100.0 and
-                                (
-                                    (t_stats['vias'] < champion['stats']['vias'] and a_new <= champion['area_mm2'] * 1.05) or
-                                    (t_stats['vias'] <= champion['stats']['vias'] and a_new < champion['area_mm2'])
-                                )
-                            )
-                            if is_viable:
-                                gain = champion['area_mm2'] - a_new
-                                pct_gain = (1.0 - a_new / init_area) * 100.0
-                                logger.info(
-                                    f"  ✓ Compaction #{step_idx} validée : {w_new:.1f}x{h_new:.1f} mm "
-                                    f"({a_new:.1f} mm², gain -{gain:.1f} mm² / -{pct_gain:.1f}%), 100% routé avec {t_stats['vias']} vias !"
-                                )
-                                champion = {
-                                    'results': copy.deepcopy(new_res),
-                                    'margin_mm': m,
-                                    'edge_cuts': new_ec,
-                                    'area_mm2': a_new,
-                                    'stats': t_stats
-                                }
-                            else:
-                                break
-
-                        results = champion['results']
-                        new_edge_cuts = champion['edge_cuts']
-                        routing_stats = champion['stats']
-                        self._apply_results_to_board(board, results, components)
-                        self._update_or_create_edge_cuts(board, components, results, margin_mm=champion['margin_mm'])
-                        SmartRouter.clean_board_tracks(board)
-                        final_router = SmartRouter(
-                            board,
-                            grid_step_mm=0.20,
-                            margin_board_mm=champion['margin_mm'],
-                            via_penalty_mm=via_penalty_mm,
-                            ground_plane_enabled=enable_gnd,
-                            gnd_net_name=gnd_net
+                        logger.info(
+                            f"  Surface optimale validee : {init_w:.1f}x{init_h:.1f} mm "
+                            f"({init_area:.1f} mm2), 100% route avec {routing_stats['vias']} vias."
                         )
-                        routing_stats = final_router.route(ground_plane_enabled=enable_gnd, gnd_net_name=gnd_net)
 
                 except Exception as re:
                     logger.error(f"Erreur durant le routage automatique : {re}", exc_info=True)
@@ -667,10 +566,10 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
         w_comp = max_x - min_x
         h_comp = max_y - min_y
 
-        # 2. Dimensions avec marge de sécurité, arrondies au millimètre supérieur
+        # 2. Dimensions avec marge de sécurité, au dixième de millimètre pour compacité maximale
         margin = from_mm(margin_mm)
-        board_w_mm = math.ceil(to_mm(w_comp + 2 * margin))
-        board_h_mm = math.ceil(to_mm(h_comp + 2 * margin))
+        board_w_mm = round(to_mm(w_comp + 2 * margin), 1)
+        board_h_mm = round(to_mm(h_comp + 2 * margin), 1)
         board_w = from_mm(board_w_mm)
         board_h = from_mm(board_h_mm)
 
