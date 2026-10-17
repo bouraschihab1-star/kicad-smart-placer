@@ -84,6 +84,39 @@ class NetClassRule:
         )
 
 
+class PadObstacle:
+    """Structure légère représentant une pastille physique pour les contraintes DFM et DRC."""
+    __slots__ = (
+        'center_x', 'center_y', 'size_x', 'size_y', 'max_dim',
+        'net_code', 'clearance', 'ref', 'pad_num', 'on_fcu', 'on_bcu'
+    )
+
+    def __init__(
+        self,
+        center_x: int,
+        center_y: int,
+        size_x: int,
+        size_y: int,
+        net_code: int,
+        clearance: int,
+        ref: str,
+        pad_num: str,
+        on_fcu: bool,
+        on_bcu: bool
+    ):
+        self.center_x = center_x
+        self.center_y = center_y
+        self.size_x = size_x
+        self.size_y = size_y
+        self.max_dim = max(size_x, size_y)
+        self.net_code = net_code
+        self.clearance = clearance
+        self.ref = ref
+        self.pad_num = pad_num
+        self.on_fcu = on_fcu
+        self.on_bcu = on_bcu
+
+
 class SmartRouter:
     """
     Routeur automatique natif pour circuits imprimés KiCad.
@@ -136,6 +169,7 @@ class SmartRouter:
         # DFM : Protection spatiale contre le Via-in-Pad
         self.pad_boxes: List[Tuple[object, int, str, str]] = []  # [(BBox, netcode, pad_num, fp_ref)]
         self.pad_via_keepout: Set[Tuple[int, int]] = set()       # Cellules interdites aux vias
+        self.all_pad_obstacles: List[PadObstacle] = []           # Obstacles physiques de pastilles (Hard Constraint #1 & #2)
 
         # Déduplication des segments et vias
         self.seen_track_segments: Set[Tuple[int, int, Tuple[int, int], Tuple[int, int]]] = set()
@@ -283,10 +317,11 @@ class SmartRouter:
     def mark_pad_obstacles(self):
         """
         Marque les pastilles physiques, leurs halos de dégagement NetClass,
-        et enregistre les zones d'interdiction stricte de Via-in-Pad.
+        et enregistre les zones d'interdiction stricte de Via-in-Pad (Hard Constraint #1).
         """
         self.pad_boxes.clear()
         self.pad_via_keepout.clear()
+        self.all_pad_obstacles.clear()
         pseudo_id = -1000
 
         for fp in self.board.GetFootprints():
@@ -302,6 +337,8 @@ class SmartRouter:
                 on_fcu = lset.Contains(pcbnew.F_Cu)
                 on_bcu = lset.Contains(pcbnew.B_Cu)
 
+                pos = pad.GetPosition()
+                size = pad.GetSize()
                 box = pad.GetBoundingBox()
                 self.pad_boxes.append((box, eff_net_code, pad.GetNumber(), fp.GetReference()))
 
@@ -310,17 +347,35 @@ class SmartRouter:
 
                 rule = self.net_rules.get(net_code, NetClassRule())
 
-                # DFM 1 : Bounding Box d'exclusion des Vias (Règle stricte du Diamètre)
+                # Enregistrer l'obstacle pastille pour les contraintes strictes #1 et #2
+                pad_obs = PadObstacle(
+                    center_x=pos.x,
+                    center_y=pos.y,
+                    size_x=size.x,
+                    size_y=size.y,
+                    net_code=eff_net_code,
+                    clearance=rule.clearance,
+                    ref=fp.GetReference(),
+                    pad_num=pad.GetNumber(),
+                    on_fcu=on_fcu,
+                    on_bcu=on_bcu
+                )
+                self.all_pad_obstacles.append(pad_obs)
+
+                # Hard Constraint #1 : Condition stricte d'interdiction de Via-in-Pad :
+                # distance_centre_a_centre > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_de_la_netclass
                 via_copper_radius = rule.via_dia / 2.0
-                via_exclusion_dist = via_copper_radius + rule.clearance
+                pad_half_max = pad_obs.max_dim / 2.0
+                via_exclusion_dist = via_copper_radius + pad_half_max + rule.clearance
+
+                center_c, center_r = self._coord_to_grid(pos.x, pos.y)
                 ex_via_cells = max(2, int(math.ceil(via_exclusion_dist / self.grid_step)))
 
-                for c in range(c1 - ex_via_cells, c2 + ex_via_cells + 1):
-                    for r in range(r1 - ex_via_cells, r2 + ex_via_cells + 1):
+                for c in range(center_c - ex_via_cells, center_c + ex_via_cells + 1):
+                    for r in range(center_r - ex_via_cells, center_r + ex_via_cells + 1):
                         if 0 <= c < self.cols and 0 <= r < self.rows:
-                            dx = max(0, c1 - c, c - c2) * self.grid_step
-                            dy = max(0, r1 - r, r - r2) * self.grid_step
-                            if math.hypot(dx, dy) < via_exclusion_dist:
+                            gx, gy = self._grid_to_coord(c, r)
+                            if math.hypot(gx - pos.x, gy - pos.y) <= via_exclusion_dist:
                                 self.pad_via_keepout.add((c, r))
 
                 layers = []
@@ -346,6 +401,89 @@ class SmartRouter:
                                 dy = max(0, r1 - r, r - r2)
                                 if dx * dx + dy * dy <= cl_cells * cl_cells:
                                     self.clearance_cells[(layer, c, r)].add(eff_net_code)
+
+    def is_via_placement_valid(
+        self,
+        vx: int,
+        vy: int,
+        netcode: int,
+        rule: NetClassRule
+    ) -> bool:
+        """
+        Validation Mathématique Absolue du Placement d'un Via (Hard Constraint #1).
+
+        Condition stricte obligatoire :
+        distance_centre_a_centre > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_de_la_netclass
+
+        Si cette condition n'est pas remplie pour TOUTES les pastilles du circuit (sans exception),
+        le via est purement et simplement INTERDIT (coût infini), même si le chemin échoue.
+        """
+        via_half_width = rule.via_dia / 2.0
+        via_net_clearance = rule.clearance
+
+        for pad in self.all_pad_obstacles:
+            pad_half_max = pad.max_dim / 2.0
+            eff_clearance = max(via_net_clearance, pad.clearance)
+            min_allowed_dist = via_half_width + pad_half_max + eff_clearance
+
+            dx = vx - pad.center_x
+            dy = vy - pad.center_y
+            dist_centre_a_centre = math.hypot(dx, dy)
+
+            # Condition stricte absolue
+            if dist_centre_a_centre <= min_allowed_dist:
+                return False
+
+        # Vérification d'isolement avec les vias existants de nets différents
+        if hasattr(self.board, "GetTracks"):
+            for existing in self.board.GetTracks():
+                if isinstance(existing, pcbnew.PCB_VIA):
+                    if existing.GetNetCode() != netcode:
+                        epos = existing.GetPosition()
+                        ex_w = existing.GetWidth(pcbnew.F_Cu) if hasattr(existing, 'GetWidth') else rule.via_dia
+                        req_spacing = (rule.via_dia + ex_w) / 2.0 + via_net_clearance
+                        d_via = math.hypot(epos.x - vx, epos.y - vy)
+                        if d_via <= req_spacing:
+                            return False
+
+        return True
+
+    def get_dynamic_via_cost(
+        self,
+        vx: int,
+        vy: int,
+        rule: NetClassRule,
+        r_safe_mm: float = 6.0
+    ) -> int:
+        """
+        Fonction de coût dynamique : Fuite avant Perçage (Hard Constraint #2).
+
+        Formule stricte :
+        Via_Cost = Base_Via_Cost + (Proximité_avec_une_pastille * 100)
+
+        Cela force le via à s'éloigner au maximum des composants avant de percer.
+        """
+        base_via_cost = self.via_penalty  # En nanomètres
+
+        if not self.all_pad_obstacles:
+            return int(base_via_cost)
+
+        # Distance minimale euclidienne à toutes les pastilles (en mm)
+        min_dist_nm = min(
+            math.hypot(vx - pad.center_x, vy - pad.center_y)
+            for pad in self.all_pad_obstacles
+        )
+        min_dist_mm = to_mm(min_dist_nm)
+
+        # Proximité avec une pastille : positive et croissante à mesure qu'on s'approche
+        # en-dessous du rayon de sécurité r_safe_mm. Nulle au-delà de r_safe_mm.
+        if min_dist_mm < r_safe_mm:
+            proximite_pastille_mm = r_safe_mm - min_dist_mm
+            # (Proximité * 100) converti en nanomètres
+            prox_penalty_nm = from_mm(proximite_pastille_mm * 100.0)
+            return int(base_via_cost + prox_penalty_nm)
+        else:
+            return int(base_via_cost)
 
         # Interdiction de traversée inter-pastilles CMS 2-pins (R, C, etc.)
         for fp in self.board.GetFootprints():
@@ -649,25 +787,38 @@ class SmartRouter:
                     came_from[next_node] = (layer, c, r, prev_dir, steps_since_via, steps_from_start)
                     heapq.heappush(open_set, (new_g + heuristic(layer, nc, nr), new_g, next_node))
 
-            # 2. Vias : Interdiction stricte du "Via-in-Pad" et Dégagement Bi-couche
+            # 2. Vias : Hard Constraints #1 & #2 (Anti Via-in-Pad & Fuite avant Perçage)
             dist_to_start = math.hypot(c - sc, r - sr)
             dist_to_goal = math.hypot(c - gc, r - gr)
 
-            is_inside_any_pad = (c, r) in self.pad_via_keepout
+            vx, vy = self._grid_to_coord(c, r)
+
+            # Hard Constraint #1 : Interdiction Mathématique Absolue des Via-in-Pad
+            # distance_centre_a_centre > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_de_la_netclass
+            is_placement_legal = ((c, r) not in self.pad_via_keepout) and self.is_via_placement_valid(vx, vy, netcode, rule)
+
             has_escaped_start = (steps_from_start >= self.min_escape_cells) and (dist_to_start >= self.min_escape_cells)
             not_inside_goal = dist_to_goal >= self.min_escape_cells
             can_switch_hysteresis = (steps_since_via >= self.min_via_span)
 
-            if not is_inside_any_pad and has_escaped_start and not_inside_goal and can_switch_hysteresis:
+            if is_placement_legal and has_escaped_start and not_inside_goal and can_switch_hysteresis:
                 other_layer = 1 - layer
                 via_blocked = False
+
                 for dc_v in range(-req_via_cells, req_via_cells + 1):
                     for dr_v in range(-req_via_cells, req_via_cells + 1):
                         if dc_v * dc_v + dr_v * dr_v <= req_via_cells * req_via_cells:
                             vc, vr = c + dc_v, r + dr_v
+                            if not (0 <= vc < self.cols and 0 <= vr < self.rows):
+                                via_blocked = True
+                                break
                             for chk_l in (0, 1):
                                 vo = self.occupied_cells.get((chk_l, vc, vr))
                                 if vo is not None and vo != netcode:
+                                    via_blocked = True
+                                    break
+                                vc_cls = self.clearance_cells.get((chk_l, vc, vr))
+                                if vc_cls and any(on != netcode for on in vc_cls):
                                     via_blocked = True
                                     break
                             if via_blocked:
@@ -676,7 +827,9 @@ class SmartRouter:
                         break
 
                 if not via_blocked:
-                    new_g = current_g + self.via_penalty
+                    # Hard Constraint #2 : Via_Cost = Base_Via_Cost + (Proximite_avec_une_pastille * 100)
+                    dynamic_via_cost = self.get_dynamic_via_cost(vx, vy, rule)
+                    new_g = current_g + dynamic_via_cost
                     neighbor_state = (other_layer, c, r)
                     if neighbor_state not in g_scores or new_g < g_scores[neighbor_state]:
                         g_scores[neighbor_state] = new_g
@@ -695,19 +848,25 @@ class SmartRouter:
     ) -> Optional[List[Tuple[int, int, int]]]:
         """
         Recherche le chemin optimal entre deux pastilles via A*.
-        Essaie systématiquement le routage monocouche d'abord (F.Cu puis B.Cu = 0 via),
-        puis le multicouche avec forte pénalité et hystérésis si nécessaire.
+        
+        Hard Constraint #2 : Le changement de couche (placement d'un via)
+        n'est autorisé QUE SI le pathfinding de la couche actuelle a exploré
+        la totalité de la grille disponible sans succès.
         """
-        is_mains = (rule.track_width >= from_mm(0.70))
-
-        if not is_mains and start_pad['on_fcu'] and end_pad['on_fcu']:
+        # 1. Si les deux pastilles ont au moins une couche en commun, tenter d'abord
+        # l'exploration monocouche exhaustive (0 via garanti).
+        if start_pad['on_fcu'] and end_pad['on_fcu']:
             p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=0)
-            if p: return p
+            if p:
+                return p
 
         if start_pad['on_bcu'] and end_pad['on_bcu']:
             p = self._route_astar_single_layer(start_pad, end_pad, netcode, rule, target_layer=1)
-            if p: return p
+            if p:
+                return p
 
+        # 2. Si aucune solution monocouche n'existe après exploration complète de la grille,
+        # passer au routage multicouche avec la fonction de coût dynamique (Fuite avant Perçage).
         return self._route_astar_multilayer(start_pad, end_pad, netcode, rule)
 
     def _connect_pad_to_grid_45(self, px: int, py: int, gx: int, gy: int) -> List[Tuple[int, int, int, int]]:
@@ -954,32 +1113,13 @@ class SmartRouter:
                 continue
             self.seen_vias_set.add(via_key)
 
-            # Vérification DFM Stricte du Diamètre : (via.GetWidth() / 2) + Clearance_de_la_Netclass
-            # On utilise le diamètre de cuivre (rule.via_dia = via.GetWidth()) et non GetDrillValue()
-            is_in_pad = False
-            for pbox, pnet, pnum, pref in self.pad_boxes:
-                if pnet == netcode:
-                    # Sur le même net : interdire seulement le via-in-pad physique
-                    if pbox.Contains(pcbnew.VECTOR2I(vx, vy)):
-                        is_in_pad = True
-                        logger.warning(f"DFM REJECT: Via-in-pad physique à ({to_mm(vx):.2f}, {to_mm(vy):.2f}) dans le pad {pref}.{pnum} (même net)")
-                        break
-                else:
-                    # Sur un net différent : respect strict de la distance d'isolement DFM
-                    p_rule = self.net_rules.get(pnet, rule)
-                    via_copper_radius = rule.via_dia / 2.0
-                    req_exclusion = via_copper_radius + p_rule.clearance
-                    dx = max(pbox.GetX() - vx, 0, vx - pbox.GetRight())
-                    dy = max(pbox.GetY() - vy, 0, vy - pbox.GetBottom())
-                    dist = math.hypot(dx, dy)
-                    if dist < req_exclusion:
-                        is_in_pad = True
-                        logger.warning(
-                            f"DFM REJECT: Via collerette à ({to_mm(vx):.2f}, {to_mm(vy):.2f}) viole l'exclusion "
-                            f"(dist={to_mm(dist):.2f}mm < req={to_mm(req_exclusion):.2f}mm) avec le pad {pref}.{pnum}!"
-                        )
-                        break
-            if is_in_pad:
+            # Application stricte de la contrainte Hard #1 : Interdiction Absolue des Via-in-Pad
+            # distance_centre_a_centre > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_de_la_netclass
+            if not self.is_via_placement_valid(vx, vy, netcode, rule):
+                logger.warning(
+                    f"DFM REJECT: Via à ({to_mm(vx):.2f}, {to_mm(vy):.2f}) strictement interdit "
+                    f"(violation de la condition mathématique de distance avec les pastilles)"
+                )
                 continue
 
             already = False
