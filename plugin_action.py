@@ -76,16 +76,16 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
       - Les violations de contraintes physiques et électriques
 
     Fonctionnalités :
-      ✓ Partitionnement Min-Cut pour le placement initial
-      ✓ Recuit simulé avec mouvements adaptatifs
-      ✓ Halos de dégagement (Somme de Minkowski)
-      ✓ Classes d'équipotence (puissance vs signal)
-      ✓ Verrouillage périphérique des connecteurs
-      ✓ Groupement rigide (IC + condensateurs de découplage)
-      ✓ Flip Top/Bottom automatique si densité haute
-      ✓ Répulsion thermique entre composants de puissance
-      ✓ Orientation discrète (0°/90°/180°/270°)
-      ✓ Respect des zones interdites et trous de montage
+      [OK] Partitionnement Min-Cut pour le placement initial
+      [OK] Recuit simulé avec mouvements adaptatifs
+      [OK] Halos de dégagement (Somme de Minkowski)
+      [OK] Classes d'équipotence (puissance vs signal)
+      [OK] Verrouillage périphérique des connecteurs
+      [OK] Groupement rigide (IC + condensateurs de découplage)
+      [OK] Flip Top/Bottom automatique si densité haute
+      [OK] Répulsion thermique entre composants de puissance
+      [OK] Orientation discrète (0°/90°/180°/270°)
+      [OK] Respect des zones interdites et trous de montage
     """
 
     def defaults(self):
@@ -203,7 +203,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             # =============================================================
             #  PHASE 1 : Extraction des données de la carte
             # =============================================================
-            logger.info("\n▶ PHASE 1 : Extraction des données de la carte")
+            logger.info("\n-> PHASE 1 : Extraction des données de la carte")
             if progress_callback:
                 progress_callback(6, "Extraction des composants et des filets...")
 
@@ -232,7 +232,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             # =============================================================
             #  PHASE 2 : Modélisation spatiale et électrique
             # =============================================================
-            logger.info("\n▶ PHASE 2 : Modélisation spatiale et électrique")
+            logger.info("\n-> PHASE 2 : Modélisation spatiale et électrique")
             if progress_callback:
                 progress_callback(12, "Modélisation spatiale et connectivité...")
 
@@ -247,7 +247,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             # =============================================================
             #  PHASE 3 : Configuration des contraintes
             # =============================================================
-            logger.info("\n▶ PHASE 3 : Configuration des contraintes métier DFM")
+            logger.info("\n-> PHASE 3 : Configuration des contraintes métier DFM")
             if progress_callback:
                 progress_callback(16, "Configuration des contraintes DFM...")
 
@@ -261,7 +261,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             # =============================================================
             #  PHASE 4 : Optimisation par recuit simulé
             # =============================================================
-            logger.info("\n▶ PHASE 4 : Optimisation par recuit simulé")
+            logger.info("\n-> PHASE 4 : Optimisation par recuit simulé")
             if progress_callback:
                 progress_callback(20, "Démarrage du recuit simulé...")
 
@@ -277,7 +277,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             if enable_hier and sheets and len(sheets) > 1:
                 try:
                     replicate_sheet_layout(sheets[0], sheets[1:], optimizer.current_positions, optimizer.current_orientations)
-                    logger.info(f"  ✓ Réplication de disposition appliquée sur {len(sheets)-1} sous-feuille(s).")
+                    logger.info(f"  [OK] Réplication de disposition appliquée sur {len(sheets)-1} sous-feuille(s).")
                 except Exception as he:
                     logger.warning(f"Erreur réplication sous-feuilles : {he}")
 
@@ -291,7 +291,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             # =============================================================
             #  PHASE 5 : Application des résultats à la carte
             # =============================================================
-            logger.info("\n▶ PHASE 5 : Application des résultats à la carte")
+            logger.info("\n-> PHASE 5 : Application des résultats à la carte")
             if progress_callback:
                 progress_callback(50, "Application des positions optimisées...")
 
@@ -301,7 +301,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             # =============================================================
             #  PHASE 6 : Ajustement automatique du contour Edge.Cuts
             # =============================================================
-            logger.info("\n▶ PHASE 6 : Ajustement automatique du contour Edge.Cuts")
+            logger.info("\n-> PHASE 6 : Ajustement automatique du contour Edge.Cuts")
             if progress_callback:
                 progress_callback(53, f"Ajustement contour Edge.Cuts (marge {margin_mm} mm)...")
 
@@ -317,7 +317,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             # =============================================================
             routing_stats = None
             if do_auto_route:
-                logger.info("\n▶ PHASE 7 : Routage automatique natif (Smart Router)")
+                logger.info("\n-> PHASE 7 : Routage automatique natif (Smart Router)")
                 if progress_callback:
                     progress_callback(55, "Lancement du Smart Router A*...")
 
@@ -355,7 +355,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
                     #  PHASE 8 : Validation de la Surface Optimale Minimale
                     # =============================================================
                     if routing_stats and routing_stats.get('success_percent') == 100.0 and new_edge_cuts:
-                        logger.info("\n▶ PHASE 8 : Validation de la Surface Optimale Minimale")
+                        logger.info("\n-> PHASE 8 : Validation de la Surface Optimale Minimale")
                         if progress_callback:
                             progress_callback(88, "Validation de la compacite d'aire...")
 
@@ -374,7 +374,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             #  PHASE 8.5 : Groupement natif KiCad PCB_GROUP
             # =============================================================
             if enable_hier and sheets:
-                logger.info(f"\n▶ PHASE 8.5 : Groupement natif KiCad PCB_GROUP ({len(sheets)} sous-feuilles)")
+                logger.info(f"\n-> PHASE 8.5 : Groupement natif KiCad PCB_GROUP ({len(sheets)} sous-feuilles)")
                 if progress_callback:
                     progress_callback(93, "Création des groupes PCB_GROUP natifs...")
                 try:
@@ -386,7 +386,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
             #  PHASE 9 : Génération du Plan de Masse & Push and Shove
             # =============================================================
             if enable_gnd:
-                logger.info(f"\n▶ PHASE 9 : Optimisation Push & Shove et Génération du plan de masse cuivre ({gnd_net}) sur {gnd_layers}")
+                logger.info(f"\n-> PHASE 9 : Optimisation Push & Shove et Génération du plan de masse cuivre ({gnd_net}) sur {gnd_layers}")
                 if progress_callback:
                     progress_callback(95, "Push & Shove : Élargissement des couloirs de masse (>= 0.50 mm)...")
                 try:
@@ -394,7 +394,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
                     layer_ids = [pcbnew.F_Cu if l == 'F.Cu' else pcbnew.B_Cu for l in gnd_layers]
                     shoved_cnt = Push_And_Shove_GND_Corridors(board, target_layers=layer_ids, gnd_net_name=gnd_net, min_corridor_mm=0.50)
                     if shoved_cnt > 0:
-                        logger.info(f"  ✓ Push & Shove final : {shoved_cnt} segment(s) décalé(s) pour ouvrir les couloirs GND >= 0.50 mm.")
+                        logger.info(f"  [OK] Push & Shove final : {shoved_cnt} segment(s) décalé(s) pour ouvrir les couloirs GND >= 0.50 mm.")
                 except Exception as pse:
                     logger.warning(f"Avertissement Push & Shove GND : {pse}")
 
@@ -649,7 +649,7 @@ class SmartPlacerPlugin(pcbnew.ActionPlugin if PCBNEW_AVAILABLE else object):
                 logger.warning(f"Erreur création segment Edge.Cuts : {e}")
 
         logger.info(
-            f"  ✓ Contour Edge.Cuts ajusté : {board_w_mm:.1f} × {board_h_mm:.1f} mm "
+            f"  [OK] Contour Edge.Cuts ajusté : {board_w_mm:.1f} × {board_h_mm:.1f} mm "
             f"(Marge: {margin_mm:.1f} mm, BBox: [{to_mm(x1):.2f}, {to_mm(y1):.2f}] → [{to_mm(x2):.2f}, {to_mm(y2):.2f}])"
         )
 
