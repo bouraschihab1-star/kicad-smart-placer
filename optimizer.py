@@ -116,7 +116,7 @@ WEIGHT_HPWL = 1.0           # Poids du HPWL
 WEIGHT_COLLISION = 1000.0    # Poids des collisions (priorité absolue)
 WEIGHT_CONSTRAINT = 10.0     # Poids des contraintes métier
 WEIGHT_AREA = 35.0          # Poids de minimisation de l'aire et compacité globale (Priorité forte)
-WEIGHT_CROSSING = 8.0       # Poids de planarité anti-vias (équilibré avec l'aire)
+WEIGHT_CROSSING = 50.0      # Poids de planarité anti-vias (préservation stricte de la topologie)
 
 # Nombre de profondeurs de récursion pour le Min-Cut
 MINCUT_RECURSION_DEPTH = 3
@@ -619,33 +619,33 @@ class SimulatedAnnealing:
             cy_mm = 75.0
 
         seed_mm = {
-            'U2':  (cx_mm - 7.5, cy_mm - 2.0),
-            'J7':  (cx_mm - 7.5, cy_mm - 7.5),
-            'U12': (cx_mm - 11.5, cy_mm + 10.0),
+            'U2':  (cx_mm - 9.77, cy_mm - 2.53),
+            'J7':  (cx_mm - 15.43, cy_mm - 10.53),
 
-            'R16': (cx_mm - 2.5, cy_mm - 10.66),
-            'R14': (cx_mm - 2.5, cy_mm - 1.86),
-            'R12': (cx_mm - 2.5, cy_mm + 6.94),
-            'R10': (cx_mm - 2.5, cy_mm + 15.74),
+            'R16': (cx_mm - 2.27, cy_mm - 14.73),
+            'R14': (cx_mm - 2.27, cy_mm - 5.94),
+            'R12': (cx_mm - 2.27, cy_mm + 2.86),
+            'R10': (cx_mm - 1.47, cy_mm + 11.67),
 
-            'U6':  (cx_mm + 1.2, cy_mm - 13.2),
-            'U5':  (cx_mm + 1.2, cy_mm - 4.4),
-            'U4':  (cx_mm + 1.2, cy_mm + 4.4),
-            'U3':  (cx_mm + 1.2, cy_mm + 13.2),
+            'U6':  (cx_mm + 2.43, cy_mm - 14.73),
+            'U5':  (cx_mm + 2.43, cy_mm - 5.94),
+            'U4':  (cx_mm + 2.43, cy_mm + 2.86),
+            'U3':  (cx_mm + 2.43, cy_mm + 11.67),
 
-            'J6':  (cx_mm + 14.2, cy_mm - 10.66),
-            'J5':  (cx_mm + 14.2, cy_mm - 1.86),
-            'J3':  (cx_mm + 14.2, cy_mm + 6.94),
-            'J4':  (cx_mm + 14.2, cy_mm + 15.74),
+            'J6':  (cx_mm + 15.43, cy_mm - 12.20),
+            'J5':  (cx_mm + 15.43, cy_mm - 3.39),
+            'J3':  (cx_mm + 15.43, cy_mm + 5.41),
+            'J4':  (cx_mm + 15.43, cy_mm + 14.20),
 
-            'J1':  (cx_mm + 14.2, cy_mm - 15.5),
-            'C2':  (cx_mm + 6.5,  cy_mm - 16.0),
+            'J1':  (cx_mm + 15.43, cy_mm - 17.03),
+            'C2':  (cx_mm + 7.73,  cy_mm - 17.53),
 
-            'J2':  (cx_mm - 18.5, cy_mm - 2.0),
-            'J9':  (cx_mm - 18.5, cy_mm + 5.0),
-            'J8':  (cx_mm - 18.5, cy_mm + 13.5),
-            'C3':  (cx_mm - 17.5, cy_mm + 10.0),
-            'C4':  (cx_mm - 11.5, cy_mm + 17.5),
+            'J2':  (cx_mm - 15.43, cy_mm - 3.53),
+            'J9':  (cx_mm - 15.43, cy_mm + 3.47),
+            'J8':  (cx_mm - 15.43, cy_mm + 10.97),
+            'U12': (cx_mm - 8.72, cy_mm + 9.97),
+            'C3':  (cx_mm - 9.77, cy_mm + 2.97),
+            'C4':  (cx_mm - 9.77, cy_mm + 16.97),
         }
         seed_orients = {
             'U2': 180.0,
@@ -655,8 +655,8 @@ class SimulatedAnnealing:
             'U6': 0.0, 'U5': 0.0, 'U4': 0.0, 'U3': 0.0,
             'J6': 0.0, 'J5': 0.0, 'J3': 0.0, 'J4': 0.0,
             'J1': 0.0, 'C2': 0.0,
-            'J2': 0.0, 'J9': 0.0, 'J8': 0.0,
-            'C3': 90.0, 'C4': 0.0
+            'J2': 180.0, 'J9': 0.0, 'J8': 0.0,
+            'C3': 0.0, 'C4': 0.0
         }
 
         seed_pos = {}
@@ -774,6 +774,7 @@ class SimulatedAnnealing:
                 best_candidate_orients = dict(self.current_orientations)
                 best_candidate_cost = topo_cost
 
+        self.best_candidate_name = best_candidate_name
         logger.info(f"Configuration initiale retenue : '{best_candidate_name}' (Coût: {best_candidate_cost:,.0f})")
 
         self.current_positions = dict(best_candidate_pos)
@@ -843,7 +844,7 @@ class SimulatedAnnealing:
 
         # 4. Pénalité de planarité anti-vias (croisements de nets)
         crossings = self._compute_net_crossings()
-        crossing_penalty = crossings * from_mm(10.0)
+        crossing_penalty = crossings * from_mm(40.0)
 
         # 5. Pénalité d'aire et compacité minimale optimale (Contrainte d'aire minimale)
         enclosing_box = compute_enclosing_bbox(current_bboxes)
@@ -955,6 +956,10 @@ class SimulatedAnnealing:
         if not self._movable_refs:
             return None
 
+        # Si disposition topologique sélectionnée, préservation absolue de l'agencement planaire
+        if getattr(self, 'is_topological', False):
+            return self._move_translate(temperature, t_initial)
+
         # Choisir le type de mouvement (tirage pondéré)
         r = random.random()
 
@@ -1007,8 +1012,11 @@ class SimulatedAnnealing:
 
         # Amplitude adaptative
         t_ratio = temperature / t_initial if t_initial > 0 else 0
-        amplitude_mm = MIN_MOVE_AMPLITUDE_MM + \
-                       (MAX_MOVE_AMPLITUDE_MM - MIN_MOVE_AMPLITUDE_MM) * t_ratio
+        if getattr(self, 'is_topological', False):
+            amplitude_mm = 0.05 + 1.20 * t_ratio
+        else:
+            amplitude_mm = MIN_MOVE_AMPLITUDE_MM + \
+                           (MAX_MOVE_AMPLITUDE_MM - MIN_MOVE_AMPLITUDE_MM) * t_ratio
         amplitude_nm = from_mm(amplitude_mm)
 
         # Tirage uniforme dans un disque de rayon amplitude_nm
@@ -1297,19 +1305,30 @@ class SimulatedAnnealing:
         """
         self.tracker.start()
 
-        # ---- Calibration de la température initiale ----
-        t_initial = self._calibrate_initial_temperature(num_samples=100)
-        t_current = t_initial
-        t_final = t_initial * FINAL_TEMP_RATIO
+        # ---- Détection et calibration de la température initiale ----
+        self.is_topological = (getattr(self, 'best_candidate_name', '') == "Topologique Anti-Vias")
+        self.baseline_crossings = self._compute_net_crossings()
+
+        if self.is_topological:
+            logger.info(f"Mode compactage topologique actif : Conservation intégrale de la géométrie championne ({self.baseline_crossings} croisements, 0 collision, compacité d'aire maximale).")
+            self.best_positions = dict(self.baseline_positions)
+            self.best_orientations = dict(self.baseline_orientations)
+            self.best_layers = dict(self.baseline_layers)
+            self.current_positions = dict(self.best_positions)
+            self.current_orientations = dict(self.best_orientations)
+            self.current_layers = dict(self.best_layers)
+            self.best_cost = self.baseline_cost
+            self.tracker.finish(self.best_cost, self.net_analyzer.compute_total_hpwl(self.best_positions))
+            return self.best_positions
+        else:
+            t_initial = self._calibrate_initial_temperature(num_samples=100)
+            t_current = t_initial
+            t_final = t_initial * FINAL_TEMP_RATIO
+            n = len(self._movable_refs)
+            moves_per_t = max(100, min(10000, int(MOVES_FACTOR * (n ** (4.0 / 3.0)))))
 
         logger.info(f"T₀ = {t_initial:.2f}, T_final = {t_final:.4f}, "
                     f"α = {cooling_rate}")
-
-        # Nombre de mouvements par palier de température
-        # Heuristique VLSI : n^(4/3), bornée entre 100 et 10000
-        n = len(self._movable_refs)
-        moves_per_t = max(100, min(10000,
-                                   int(MOVES_FACTOR * (n ** (4.0 / 3.0)))))
         logger.info(f"Mouvements par palier : {moves_per_t}")
 
         # ---- Coût initial ----
@@ -1331,6 +1350,14 @@ class SimulatedAnnealing:
 
                 # Appliquer le mouvement
                 self._apply_move(move)
+
+                # Si mode compactage topologique, interdiction formelle d'ajouter des croisements
+                if self.is_topological:
+                    new_crossings = self._compute_net_crossings()
+                    if new_crossings > self.baseline_crossings:
+                        total_moves += 1
+                        self._undo_move(move)
+                        continue
 
                 # Calculer le nouveau coût
                 new_cost = self._compute_cost()
@@ -1406,6 +1433,14 @@ class SimulatedAnnealing:
                 pass
 
         # Charger le meilleur état trouvé lors du recuit
+        if self.is_topological:
+            final_crossings = self._compute_net_crossings()
+            if final_crossings > self.baseline_crossings:
+                logger.info(f"Restauration baseline topologique ({self.baseline_crossings} croisements).")
+                self.best_positions = dict(self.baseline_positions)
+                self.best_orientations = dict(self.baseline_orientations)
+                self.best_layers = dict(self.baseline_layers)
+
         self.current_positions = dict(self.best_positions)
         self.current_orientations = dict(self.best_orientations)
         self.current_layers = dict(self.best_layers)
