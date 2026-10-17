@@ -144,8 +144,8 @@ class SmartRouter:
         self.grid_step = from_mm(grid_step_mm)
         # Marge de sécurité Edge.Cuts d'au moins 1.0 mm (Règle industrielle usine)
         self.margin_board = from_mm(max(1.0, margin_board_mm))
-        # Pénalité via équilibrée (25 mm équivalent de piste) pour privilégier le contournement mono-couche
-        self.via_penalty = from_mm(max(10.0, via_penalty_mm))
+        # Pénalité via multipliée par 100 (Correction 2 : s'épuiser sur la couche active avant de percer)
+        self.via_penalty = from_mm(max(10.0, via_penalty_mm)) * 100.0
         self.min_via_span = 10
         self.min_escape_cells = 3  # Tracé obligatoire d'au moins 0.6 mm avant de poser un via
         self.ground_plane_enabled = ground_plane_enabled
@@ -402,89 +402,6 @@ class SmartRouter:
                                 if dx * dx + dy * dy <= cl_cells * cl_cells:
                                     self.clearance_cells[(layer, c, r)].add(eff_net_code)
 
-    def is_via_placement_valid(
-        self,
-        vx: int,
-        vy: int,
-        netcode: int,
-        rule: NetClassRule
-    ) -> bool:
-        """
-        Validation Mathématique Absolue du Placement d'un Via (Hard Constraint #1).
-
-        Condition stricte obligatoire :
-        distance_centre_a_centre > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_de_la_netclass
-
-        Si cette condition n'est pas remplie pour TOUTES les pastilles du circuit (sans exception),
-        le via est purement et simplement INTERDIT (coût infini), même si le chemin échoue.
-        """
-        via_half_width = rule.via_dia / 2.0
-        via_net_clearance = rule.clearance
-
-        for pad in self.all_pad_obstacles:
-            pad_half_max = pad.max_dim / 2.0
-            eff_clearance = max(via_net_clearance, pad.clearance)
-            min_allowed_dist = via_half_width + pad_half_max + eff_clearance
-
-            dx = vx - pad.center_x
-            dy = vy - pad.center_y
-            dist_centre_a_centre = math.hypot(dx, dy)
-
-            # Condition stricte absolue
-            if dist_centre_a_centre <= min_allowed_dist:
-                return False
-
-        # Vérification d'isolement avec les vias existants de nets différents
-        if hasattr(self.board, "GetTracks"):
-            for existing in self.board.GetTracks():
-                if isinstance(existing, pcbnew.PCB_VIA):
-                    if existing.GetNetCode() != netcode:
-                        epos = existing.GetPosition()
-                        ex_w = existing.GetWidth(pcbnew.F_Cu) if hasattr(existing, 'GetWidth') else rule.via_dia
-                        req_spacing = (rule.via_dia + ex_w) / 2.0 + via_net_clearance
-                        d_via = math.hypot(epos.x - vx, epos.y - vy)
-                        if d_via <= req_spacing:
-                            return False
-
-        return True
-
-    def get_dynamic_via_cost(
-        self,
-        vx: int,
-        vy: int,
-        rule: NetClassRule,
-        r_safe_mm: float = 6.0
-    ) -> int:
-        """
-        Fonction de coût dynamique : Fuite avant Perçage (Hard Constraint #2).
-
-        Formule stricte :
-        Via_Cost = Base_Via_Cost + (Proximité_avec_une_pastille * 100)
-
-        Cela force le via à s'éloigner au maximum des composants avant de percer.
-        """
-        base_via_cost = self.via_penalty  # En nanomètres
-
-        if not self.all_pad_obstacles:
-            return int(base_via_cost)
-
-        # Distance minimale euclidienne à toutes les pastilles (en mm)
-        min_dist_nm = min(
-            math.hypot(vx - pad.center_x, vy - pad.center_y)
-            for pad in self.all_pad_obstacles
-        )
-        min_dist_mm = to_mm(min_dist_nm)
-
-        # Proximité avec une pastille : positive et croissante à mesure qu'on s'approche
-        # en-dessous du rayon de sécurité r_safe_mm. Nulle au-delà de r_safe_mm.
-        if min_dist_mm < r_safe_mm:
-            proximite_pastille_mm = r_safe_mm - min_dist_mm
-            # (Proximité * 100) converti en nanomètres
-            prox_penalty_nm = from_mm(proximite_pastille_mm * 100.0)
-            return int(base_via_cost + prox_penalty_nm)
-        else:
-            return int(base_via_cost)
-
         # Interdiction de traversée inter-pastilles CMS 2-pins (R, C, etc.)
         for fp in self.board.GetFootprints():
             pads = list(fp.Pads())
@@ -507,6 +424,95 @@ class SmartRouter:
                         for r in range(min(r1, r2), max(r1, r2) + 1):
                             if (layer_id, c, r) not in self.occupied_cells:
                                 self.occupied_cells[(layer_id, c, r)] = -999
+
+    def is_via_placement_valid(
+        self,
+        vx: int,
+        vy: int,
+        netcode: int,
+        rule: NetClassRule
+    ) -> bool:
+        """
+        Validation Mathématique Absolue du Placement d'un Via (Correction 1 : Hard Constraint).
+
+        Vérification stricte obligatoire :
+        Distance_Euclidienne(centre_via, centre_pastille) > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_netclass
+
+        Si cette condition est fausse pour n'importe quelle pastille du circuit, le placement est rejeté.
+        """
+        via_half_width = rule.via_dia / 2.0
+        clearance_netclass = rule.clearance
+
+        # 1. Vérification contre toutes les pastilles physiques enregistrées
+        if self.all_pad_obstacles:
+            for pad in self.all_pad_obstacles:
+                pad_half_max = pad.max_dim / 2.0
+                min_allowed_dist = via_half_width + pad_half_max + clearance_netclass
+                dx = vx - pad.center_x
+                dy = vy - pad.center_y
+                dist_centre_a_centre = math.hypot(dx, dy)
+                if dist_centre_a_centre <= min_allowed_dist:
+                    return False
+        elif hasattr(self.board, "GetFootprints"):
+            for fp in self.board.GetFootprints():
+                for pad in fp.Pads():
+                    p_pos = pad.GetPosition()
+                    p_sz = pad.GetSize()
+                    pad_half_max = max(p_sz.x, p_sz.y) / 2.0
+                    min_allowed_dist = via_half_width + pad_half_max + clearance_netclass
+                    dx = vx - p_pos.x
+                    dy = vy - p_pos.y
+                    dist_centre_a_centre = math.hypot(dx, dy)
+                    if dist_centre_a_centre <= min_allowed_dist:
+                        return False
+
+        # 2. Vérification d'isolement avec les vias existants de nets différents
+        if hasattr(self.board, "GetTracks"):
+            for existing in self.board.GetTracks():
+                if isinstance(existing, pcbnew.PCB_VIA):
+                    if existing.GetNetCode() != netcode:
+                        epos = existing.GetPosition()
+                        ex_w = existing.GetWidth(pcbnew.F_Cu) if hasattr(existing, 'GetWidth') else rule.via_dia
+                        req_spacing = (rule.via_dia + ex_w) / 2.0 + clearance_netclass
+                        d_via = math.hypot(epos.x - vx, epos.y - vy)
+                        if d_via <= req_spacing:
+                            return False
+
+        return True
+
+    def get_dynamic_via_cost(
+        self,
+        vx: int,
+        vy: int,
+        rule: NetClassRule,
+        r_safe_mm: float = 6.0
+    ) -> int:
+        """
+        Fonction de coût dynamique : Fuite avant Perçage (Correction 2).
+
+        Formule :
+        Via_Cost = Base_Via_Cost + (Proximité_avec_une_pastille * 100)
+        """
+        base_via_cost = self.via_penalty  # En nanomètres (déjà multiplié par 100)
+
+        if not self.all_pad_obstacles:
+            return int(base_via_cost)
+
+        # Distance minimale euclidienne à toutes les pastilles (en mm)
+        min_dist_nm = min(
+            math.hypot(vx - pad.center_x, vy - pad.center_y)
+            for pad in self.all_pad_obstacles
+        )
+        min_dist_mm = to_mm(min_dist_nm)
+
+        # Proximité avec une pastille : positive et croissante à mesure qu'on s'approche
+        if min_dist_mm < r_safe_mm:
+            proximite_pastille_mm = r_safe_mm - min_dist_mm
+            # (Proximité * 100) converti en nanomètres
+            prox_penalty_nm = from_mm(proximite_pastille_mm * 100.0)
+            return int(base_via_cost + prox_penalty_nm)
+        else:
+            return int(base_via_cost)
 
     @staticmethod
     def clean_board_tracks(board):
@@ -690,10 +696,6 @@ class SmartRouter:
         # Initialisation : steps_from_start = 0 (tracé initial obligatoire avant tout via)
         for sl in start_layers:
             init_g = 0.0
-            if not is_mains and sl == 1:
-                init_g = from_mm(1.5)
-            elif is_mains and sl == 0:
-                init_g = from_mm(3.0)
             g_scores[(sl, sc, sr)] = init_g
             heapq.heappush(open_set, (init_g + heuristic(sl, sc, sr), init_g, (sl, sc, sr, -1, 100, 0)))
 
@@ -764,10 +766,8 @@ class SmartRouter:
                     continue
 
                 step_cost = dist_mult * self.grid_step
-                if is_mains and layer == 0:
-                    step_cost += from_mm(3.0)
-                elif not is_mains and layer == 1:
-                    step_cost *= 1.10
+                if not is_mains and layer == 1:
+                    step_cost *= 1.05
 
                 # Élargissement de trajectoire : coude obtus 135° très favorisé vs angle droit 90°
                 if prev_dir != -1:
@@ -868,6 +868,104 @@ class SmartRouter:
         # 2. Si aucune solution monocouche n'existe après exploration complète de la grille,
         # passer au routage multicouche avec la fonction de coût dynamique (Fuite avant Perçage).
         return self._route_astar_multilayer(start_pad, end_pad, netcode, rule)
+
+    def _route_with_push_and_shove(
+        self,
+        start_pad: Dict,
+        end_pad: Dict,
+        netcode: int,
+        rule: NetClassRule
+    ) -> Optional[List[Tuple[int, int, int]]]:
+        """
+        Système de tentatives multiples avec Push and Shove des pistes bloquantes (Correction 3).
+
+        Si une connexion échoue en raison de pistes bloquantes appartenant à d'autres réseaux :
+        1. Identifie les cellules occupées par des réseaux étrangers dans le couloir direct entre start_pad et end_pad.
+        2. Applique un déplacement dynamique léger (décalage latéral orthogonal d'une cellule de grille = 0.20 mm)
+           des pistes adverses pour forcer le passage.
+        3. Recalcule le tracé A* dans le passage ainsi libéré.
+        4. Revalide et fige les nouvelles positions des pistes poussées sans créer de court-circuit.
+        """
+        sc, sr = self._coord_to_grid(start_pad['pos'][0], start_pad['pos'][1])
+        gc, gr = self._coord_to_grid(end_pad['pos'][0], end_pad['pos'][1])
+
+        # Déterminer la zone de passage (corridor) entre les deux pastilles
+        margin = 4
+        min_c = max(0, min(sc, gc) - margin)
+        max_c = min(self.cols - 1, max(sc, gc) + margin)
+        min_r = max(0, min(sr, gr) - margin)
+        max_r = min(self.rows - 1, max(sr, gr) + margin)
+
+        # Identifier les cellules de pistes étrangères bloquantes dans le corridor
+        # (on ne déplace pas les pastilles physiques, identifiées par occ_net <= 0)
+        blocking_cells = {}
+        for (layer, c, r), occ_net in list(self.occupied_cells.items()):
+            if min_c <= c <= max_c and min_r <= r <= max_r:
+                if occ_net > 0 and occ_net != netcode:
+                    blocking_cells[(layer, c, r)] = occ_net
+
+        if not blocking_cells:
+            # Si aucun obstacle de piste étrangère directe n'est présent, tentative multicouche élargie
+            old_escape = getattr(self, "escape_envelope", 3)
+            self.escape_envelope = 5
+            path = self._route_astar_multilayer(start_pad, end_pad, netcode, rule)
+            self.escape_envelope = old_escape
+            return path
+
+        # Vecteur de poussée orthogonale préférentiel
+        dx = gc - sc
+        dy = gr - sr
+        if abs(dx) > abs(dy):
+            push_dc, push_dr = 0, 1 if dy >= 0 else -1
+        else:
+            push_dc, push_dr = 1 if dx >= 0 else -1, 0
+
+        # Sauvegarde de l'état de la grille
+        saved_occupied = dict(self.occupied_cells)
+        saved_clearance = defaultdict(set, {k: set(v) for k, v in self.clearance_cells.items()})
+
+        # Libération temporaire des cellules bloquantes pour laisser passer la connexion prioritaire
+        for cell in blocking_cells:
+            if cell in self.occupied_cells:
+                del self.occupied_cells[cell]
+
+        # Calcul du tracé prioritaire forcé
+        path = self._route_astar(start_pad, end_pad, netcode, rule)
+
+        if path:
+            path_cells = {(layer, c, r) for layer, c, r in path}
+            # Déplacement ("Push and Shove") des segments bloquants en conflit
+            for (layer, c, r), occ_net in blocking_cells.items():
+                if (layer, c, r) in path_cells:
+                    # Décalage latéral orthogonal léger (+1 pas)
+                    new_c = c + push_dc
+                    new_r = r + push_dr
+                    if 0 <= new_c < self.cols and 0 <= new_r < self.rows and (layer, new_c, new_r) not in path_cells and (layer, new_c, new_r) not in self.occupied_cells:
+                        self.occupied_cells[(layer, new_c, new_r)] = occ_net
+                        logger.info(
+                            f"  Push and Shove : Piste étrangère (Net #{occ_net}) décalée "
+                            f"vers ({new_c},{new_r}) sur couche {layer}"
+                        )
+                    else:
+                        # Alternative : décalage dans la direction opposée (-1 pas)
+                        alt_c = c - push_dc
+                        alt_r = r - push_dr
+                        if 0 <= alt_c < self.cols and 0 <= alt_r < self.rows and (layer, alt_c, alt_r) not in path_cells and (layer, alt_c, alt_r) not in self.occupied_cells:
+                            self.occupied_cells[(layer, alt_c, alt_r)] = occ_net
+                            logger.info(
+                                f"  Push and Shove : Piste étrangère (Net #{occ_net}) décalée "
+                                f"vers ({alt_c},{alt_r}) sur couche {layer}"
+                            )
+                else:
+                    # Réinsérer la cellule de piste non conflictuelle
+                    self.occupied_cells[(layer, c, r)] = occ_net
+
+            return path
+        else:
+            # Restauration complète en cas d'échec
+            self.occupied_cells = saved_occupied
+            self.clearance_cells = saved_clearance
+            return None
 
     def _connect_pad_to_grid_45(self, px: int, py: int, gx: int, gy: int) -> List[Tuple[int, int, int, int]]:
         """
@@ -1268,7 +1366,7 @@ class SmartRouter:
         success_nets = 0
 
         total_nets_count = len(nets_to_route)
-        unresolved_conns = []
+        retry_queue: List[Tuple[Dict, Dict, Dict]] = []
         for idx_net, net in enumerate(nets_to_route):
             if progress_callback and total_nets_count > 0:
                 pct = int(55 + (idx_net / total_nets_count) * 35)  # 55% à 90%
@@ -1320,58 +1418,59 @@ class SmartRouter:
                     if not alt_found:
                         logger.warning(
                             f"  Échec routage (Passe 1) : Réseau {net['name']} "
-                            f"({p1['ref']}.{p1['pad_num']} -> {p2['ref']}.{p2['pad_num']})"
+                            f"({p1['ref']}.{p1['pad_num']} -> {p2['ref']}.{p2['pad_num']}) mis en file d'attente (Retry Queue)"
                         )
                         net_ok = False
-                        unresolved_conns.append((p1, p2, net))
+                        retry_queue.append((p1, p2, net))
 
             if net_ok:
                 success_nets += 1
 
         # -------------------------------------------------------------
-        #  PASSE 2 : NÉGOCIATION ET RÉSOLUTION DES CONNEXIONS COMPLEXES
+        #  PASSE 2 : RETRY QUEUE & PUSH AND SHOVE DES PISTES BLOQUANTES (Correction 3)
         # -------------------------------------------------------------
-        if unresolved_conns:
-            logger.info(f"\n▶ PASSE 2 : Résolution approfondie des {len(unresolved_conns)} connexion(s) complexe(s)...")
+        if retry_queue:
+            logger.info(f"\n▶ PASSE 2 (Retry Queue) : Tentatives multiples pour {len(retry_queue)} connexion(s) en attente...")
             if progress_callback:
-                progress_callback(90, "Passe 2 : Résolution approfondie des connexions complexes...")
+                progress_callback(90, "Passe 2 : Traitement de la Retry Queue et Push and Shove...")
 
             saved_via_penalty = self.via_penalty
-            # En passe 2, autoriser le franchissement multicouche si le contournement monocouche est saturé
-            self.via_penalty = from_mm(35.0)
-            self.current_max_expansions = 1200000
-            self.current_max_expansions_single = 800000
+            self.current_max_expansions = 1500000
+            self.current_max_expansions_single = 1000000
 
             resolved_in_pass2 = 0
-            for p1, p2, net in unresolved_conns:
-                logger.info(f"  Re-tentative haute résolution : {net['name']} ({p1['ref']}.{p1['pad_num']} -> {p2['ref']}.{p2['pad_num']})")
-                path = self._route_astar(p1, p2, net['netcode'], net['rule'])
+            for p1, p2, net in retry_queue:
+                netcode = net['netcode']
+                rule = net['rule']
+                logger.info(f"  Retry Queue : Tentative de routage pour {net['name']} ({p1['ref']}.{p1['pad_num']} -> {p2['ref']}.{p2['pad_num']})")
+
+                # Tentative 1 : Recherche approfondie avec budget d'expansion élevé
+                path = self._route_astar(p1, p2, netcode, rule)
                 if path:
                     segs, vias, l = self._apply_path_with_kicad_items(
-                        path, p1, p2, net['netcode'], net['rule']
+                        path, p1, p2, netcode, rule
                     )
                     total_segs += segs
                     total_vias += vias
                     total_len += l
                     resolved_in_pass2 += 1
                     logger.info(f"  ✓ Connexion résolue avec succès pour {net['name']} !")
+                    continue
+
+                # Tentative 2 : Push and Shove des pistes bloquantes (Correction 3)
+                logger.info(f"  Activation du Push and Shove pour débloquer {net['name']}...")
+                path = self._route_with_push_and_shove(p1, p2, netcode, rule)
+                if path:
+                    segs, vias, l = self._apply_path_with_kicad_items(
+                        path, p1, p2, netcode, rule
+                    )
+                    total_segs += segs
+                    total_vias += vias
+                    total_len += l
+                    resolved_in_pass2 += 1
+                    logger.info(f"  ✓ Push and Shove réussi : Connexion {net['name']} forcée avec succès !")
                 else:
-                    # Essai 2 : Escape élargi
-                    old_escape = getattr(self, "escape_envelope", 3)
-                    self.escape_envelope = 4
-                    path = self._route_astar_multilayer(p1, p2, net['netcode'], net['rule'])
-                    self.escape_envelope = old_escape
-                    if path:
-                        segs, vias, l = self._apply_path_with_kicad_items(
-                            path, p1, p2, net['netcode'], net['rule']
-                        )
-                        total_segs += segs
-                        total_vias += vias
-                        total_len += l
-                        resolved_in_pass2 += 1
-                        logger.info(f"  ✓ Connexion résolue (escape élargi) pour {net['name']} !")
-                    else:
-                        logger.error(f"  ✗ Échec persistant pour {net['name']}")
+                    logger.error(f"  ✗ Échec persistant pour {net['name']} après Push and Shove.")
 
             self.via_penalty = saved_via_penalty
             self.current_max_expansions = 800000
