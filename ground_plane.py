@@ -152,16 +152,41 @@ def add_ground_plane(
         (104.57, 70.83),
         (98.0, 91.0)
     ]
+    import math
+    via_width_nm = from_mm(0.80)
+    cl_nm = from_mm(clearance_mm)
+    all_pads = [p for fp in board.GetFootprints() for p in fp.Pads()]
+
     for vx, vy in stitching_coords:
         px, py = int(round(vx * 1e6)), int(round(vy * 1e6))
-        if (px, py) not in existing_vias:
-            v = pcbnew.PCB_VIA(board)
-            v.SetPosition(pcbnew.VECTOR2I(px, py))
-            v.SetWidth(from_mm(0.80))
-            v.SetDrill(from_mm(0.40))
-            v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
-            v.SetNetCode(gnd_code)
-            board.Add(v)
+        if (px, py) in existing_vias:
+            continue
+
+        # Hard Constraint #1 : Interdiction Absolue des Via-in-Pad
+        is_legal = True
+        for p in all_pads:
+            ppos = p.GetPosition()
+            psize = p.GetSize()
+            max_pad = max(psize.x, psize.y)
+            req_dist = (via_width_nm / 2.0) + (max_pad / 2.0) + cl_nm
+            dist = math.hypot(px - ppos.x, py - ppos.y)
+            if dist <= req_dist:
+                is_legal = False
+                logger.warning(
+                    f"DFM REJECT: Stitching via à ({vx:.2f}, {vy:.2f}) mm strictement interdit "
+                    f"(trop proche d'une pastille : dist={dist/1e6:.2f}mm <= req={req_dist/1e6:.2f}mm)"
+                )
+                break
+        if not is_legal:
+            continue
+
+        v = pcbnew.PCB_VIA(board)
+        v.SetPosition(pcbnew.VECTOR2I(px, py))
+        v.SetWidth(via_width_nm)
+        v.SetDrill(from_mm(0.40))
+        v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+        v.SetNetCode(gnd_code)
+        board.Add(v)
 
     # 6. Remplir le cuivre (Zone Filler)
     import threading
