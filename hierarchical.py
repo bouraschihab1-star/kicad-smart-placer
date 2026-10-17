@@ -80,14 +80,14 @@ def detect_hierarchical_sheets(board, components) -> List[HierarchicalSheet]:
                 sh.components = refs
                 _assign_sheet_anchor(sh, comp_by_ref)
                 sheets.append(sh)
-        logger.info(f"✓ Détection hiérarchique native : {len(sheets)} sous-feuilles trouvées.")
+        logger.info(f"[OK] Détection hiérarchique native : {len(sheets)} sous-feuilles trouvées.")
         return sheets
 
     # 2. Détection de repli : Détection des canaux fonctionnels identiques (Topologie)
     # Chercher les motifs répétitifs d'optocoupleurs + résistances + connecteurs
     channels = _detect_isomorphic_channels(components, board)
     if channels:
-        logger.info(f"✓ Détection topologique de canaux identiques : {len(channels)} canaux modulaires identifiés.")
+        logger.info(f"[OK] Détection topologique de canaux identiques : {len(channels)} canaux modulaires identifiés.")
         return channels
 
     return []
@@ -242,4 +242,4 @@ def create_pcb_groups(board, sheets: List[HierarchicalSheet]):
             board.Add(grp)
             created += 1
 
-    logger.info(f"✓ Groupement KiCad : {created} groupe(s) PCB_GROUP créés avec succès pour les sous-feuilles.")
+    logger.info(f"[OK] Groupement KiCad : {created} groupe(s) PCB_GROUP créés avec succès pour les sous-feuilles.")
