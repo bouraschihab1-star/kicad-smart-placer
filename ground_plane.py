@@ -142,51 +142,107 @@ def add_ground_plane(
                         break
                 break
 
-    # Vias de piquage GND entre F.Cu et B.Cu pour interconnecter les plans et ilots
-    existing_vias = {(v.GetPosition().x, v.GetPosition().y) 
-                     for v in board.GetTracks() if v.GetClass() == "PCB_VIA"}
-    
-    stitching_coords = [
-        (112.76, 87.08),
-        (103.63, 74.81),
-        (104.57, 70.83),
-        (98.0, 91.0)
-    ]
+    # 5. Routine de secours pour pastilles GND isolées et vias de piquage (Correction 2)
+    existing_vias = {
+        (v.GetPosition().x, v.GetPosition().y) 
+        for v in board.GetTracks() if v.GetClass() == "PCB_VIA"
+    }
+
     import math
-    via_width_nm = from_mm(0.80)
+    via_width_nm = from_mm(0.60)
+    via_drill_nm = from_mm(0.30)
     cl_nm = from_mm(clearance_mm)
-    all_pads = [p for fp in board.GetFootprints() for p in fp.Pads()]
 
-    for vx, vy in stitching_coords:
-        px, py = int(round(vx * 1e6)), int(round(vy * 1e6))
-        if (px, py) in existing_vias:
-            continue
+    all_pads = [(fp.GetReference(), p) for fp in board.GetFootprints() for p in fp.Pads()]
+    smd_gnd_pads = [
+        (ref, p) for ref, p in all_pads 
+        if p.GetNetCode() == gnd_code and p.GetDrillSize().x == 0 and p.GetLayerSet().Contains(pcbnew.F_Cu)
+    ]
 
-        # Hard Constraint #1 : Interdiction Absolue des Via-in-Pad
-        is_legal = True
-        for p in all_pads:
-            ppos = p.GetPosition()
-            psize = p.GetSize()
-            max_pad = max(psize.x, psize.y)
-            req_dist = (via_width_nm / 2.0) + (max_pad / 2.0) + cl_nm
-            dist = math.hypot(px - ppos.x, py - ppos.y)
-            if dist <= req_dist:
-                is_legal = False
-                logger.warning(
-                    f"DFM REJECT: Stitching via à ({vx:.2f}, {vy:.2f}) mm strictement interdit "
-                    f"(trop proche d'une pastille : dist={dist/1e6:.2f}mm <= req={req_dist/1e6:.2f}mm)"
-                )
+    edge_bb = board.GetBoardEdgesBoundingBox()
+    margin_nm = from_mm(1.0)
+
+    # Pour chaque pastille GND CMS isolée sur F.Cu, poser un via de secours ET relier le via à la pastille
+    for ref, pad in smd_gnd_pads:
+        ppos = pad.GetPosition()
+        psz = pad.GetSize()
+        max_pad = max(psz.x, psz.y)
+
+        # Condition stricte absolue :
+        # Distance_Euclidienne > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_netclass
+        req_dist = (via_width_nm / 2.0) + (max_pad / 2.0) + cl_nm
+
+        best_candidate = None
+        for extra_d in [0.15, 0.30, 0.50, 0.80]:
+            search_dist = req_dist + from_mm(extra_d)
+            for deg in [0, 45, 90, 135, 180, 225, 270, 315]:
+                rad = math.radians(deg)
+                vx = int(round(ppos.x + search_dist * math.cos(rad)))
+                vy = int(round(ppos.y + search_dist * math.sin(rad)))
+
+                if not (edge_bb.GetX() + margin_nm <= vx <= edge_bb.GetRight() - margin_nm and
+                        edge_bb.GetY() + margin_nm <= vy <= edge_bb.GetBottom() - margin_nm):
+                    continue
+
+                # Vérification stricte anti-collision et anti-via-in-pad
+                is_legal = True
+                for o_ref, o_pad in all_pads:
+                    o_pos = o_pad.GetPosition()
+                    o_sz = o_pad.GetSize()
+                    o_max = max(o_sz.x, o_sz.y)
+                    o_req = (via_width_nm / 2.0) + (o_max / 2.0) + cl_nm
+                    if math.hypot(vx - o_pos.x, vy - o_pos.y) <= o_req:
+                        is_legal = False
+                        break
+
+                if is_legal:
+                    for ex_vx, ex_vy in existing_vias:
+                        if math.hypot(vx - ex_vx, vy - ex_vy) <= (via_width_nm + cl_nm):
+                            is_legal = False
+                            break
+
+                if is_legal:
+                    best_candidate = (vx, vy)
+                    break
+            if best_candidate:
                 break
-        if not is_legal:
-            continue
 
-        v = pcbnew.PCB_VIA(board)
-        v.SetPosition(pcbnew.VECTOR2I(px, py))
-        v.SetWidth(via_width_nm)
-        v.SetDrill(from_mm(0.40))
-        v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
-        v.SetNetCode(gnd_code)
-        board.Add(v)
+        if best_candidate:
+            vx, vy = best_candidate
+
+            # 1. Instanciation du Via de secours
+            v = pcbnew.PCB_VIA(board)
+            v.SetPosition(pcbnew.VECTOR2I(vx, vy))
+            v.SetWidth(via_width_nm)
+            v.SetDrill(via_drill_nm)
+            v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+            v.SetNetCode(gnd_code)
+            board.Add(v)
+            existing_vias.add((vx, vy))
+
+            # 2. Correction 2 : Instanciation explicite du segment de piste reliant le via au centre de la pastille
+            track = pcbnew.PCB_TRACK(board)
+            track.SetStart(pad.GetPosition())
+            track.SetEnd(v.GetPosition())
+            track.SetLayer(pcbnew.F_Cu)
+            track.SetWidth(from_mm(0.25))
+            track.SetNetCode(gnd_code)
+            board.Add(track)
+            logger.info(
+                f"Via GND de secours et piste de liaison créés : {ref}.{pad.GetNumber()} -> "
+                f"Via ({vx/1e6:.2f}, {vy/1e6:.2f}) mm sur F.Cu"
+            )
+
+    # Liaison directe de la pastille centrale thermique QFN U2.21 vers U2.8
+    u2_pads = {p.GetNumber(): p for ref, p in smd_gnd_pads if ref == "U2"}
+    if "21" in u2_pads and "8" in u2_pads:
+        t_qfn = pcbnew.PCB_TRACK(board)
+        t_qfn.SetStart(u2_pads["21"].GetPosition())
+        t_qfn.SetEnd(u2_pads["8"].GetPosition())
+        t_qfn.SetLayer(pcbnew.F_Cu)
+        t_qfn.SetWidth(from_mm(0.25))
+        t_qfn.SetNetCode(gnd_code)
+        board.Add(t_qfn)
 
     # 6. Remplir le cuivre (Zone Filler)
     import threading
