@@ -93,17 +93,6 @@ if WX_AVAILABLE:
         def _init_ui(self):
             sizer = wx.BoxSizer(wx.VERTICAL)
 
-            # 1. Mode d'optimisation (0 choix : Mode Unique Industriel Haute Densité)
-            box_effort = wx.StaticBox(self, label="Optimisation")
-            sz_effort = wx.StaticBoxSizer(box_effort, wx.HORIZONTAL)
-
-            lbl_effort = wx.StaticText(box_effort, label="Mode :")
-            sz_effort.Add(lbl_effort, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
-
-            txt_effort = wx.StaticText(box_effort, label="Extrême (Haute densité & Compacité d'aire maximale)")
-            sz_effort.Add(txt_effort, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
-            sizer.Add(sz_effort, 0, wx.EXPAND | wx.ALL, 6)
-
             # 2. Grille de placement
             box_grid = wx.StaticBox(self, label="Grille")
             sz_grid = wx.StaticBoxSizer(box_grid, wx.HORIZONTAL)
