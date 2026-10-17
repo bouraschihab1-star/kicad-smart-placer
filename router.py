@@ -368,6 +368,13 @@ class SmartRouter:
 
                 rule = self.net_rules.get(net_code, NetClassRule())
 
+                # Prise en compte de la clearance locale de la pastille (ex: composants HT à pas fin)
+                eff_pad_clearance = rule.clearance
+                if hasattr(pad, "GetLocalClearance"):
+                    loc_cl = pad.GetLocalClearance()
+                    if loc_cl is not None and loc_cl > 0:
+                        eff_pad_clearance = loc_cl
+
                 # Enregistrer l'obstacle pastille pour les contraintes strictes #1 et #2
                 pad_obs = PadObstacle(
                     center_x=pos.x,
@@ -375,7 +382,7 @@ class SmartRouter:
                     size_x=size.x,
                     size_y=size.y,
                     net_code=eff_net_code,
-                    clearance=rule.clearance,
+                    clearance=eff_pad_clearance,
                     ref=fp.GetReference(),
                     pad_num=pad.GetNumber(),
                     on_fcu=on_fcu,
@@ -387,7 +394,7 @@ class SmartRouter:
                 # distance_centre_a_centre > (via.GetWidth() / 2) + (max(pad.GetSize().x, pad.GetSize().y) / 2) + clearance_de_la_netclass
                 via_copper_radius = rule.via_dia / 2.0
                 pad_half_max = pad_obs.max_dim / 2.0
-                via_exclusion_dist = via_copper_radius + pad_half_max + rule.clearance
+                via_exclusion_dist = via_copper_radius + pad_half_max + eff_pad_clearance
 
                 center_c, center_r = self._coord_to_grid(pos.x, pos.y)
                 ex_via_cells = max(2, int(math.ceil(via_exclusion_dist / self.grid_step)))
@@ -405,7 +412,7 @@ class SmartRouter:
 
                 pad_netname = pad.GetNetname()
                 is_gnd_pad = self.ground_plane_enabled and self.is_ground_net(pad_netname)
-                eff_clearance = max(rule.clearance, from_mm(0.50)) if is_gnd_pad else rule.clearance
+                eff_clearance = max(eff_pad_clearance, from_mm(0.50)) if is_gnd_pad else eff_pad_clearance
                 cl_cells = max(1, int(math.ceil(eff_clearance / self.grid_step)))
 
                 for layer in layers:
