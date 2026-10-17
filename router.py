@@ -175,6 +175,27 @@ class SmartRouter:
         self.seen_track_segments: Set[Tuple[int, int, Tuple[int, int], Tuple[int, int]]] = set()
         self.seen_vias_set: Set[Tuple[int, int, int]] = set()
 
+        # Correction obligatoire : Pre-Routing Zone Fill dès l'initialisation du routeur
+        self.pre_route_zone_fill()
+
+    def pre_route_zone_fill(self):
+        """
+        Pre-Routing Zone Fill (Correction obligatoire) :
+        Force KiCad à recalculer toutes les zones de cuivre de la carte avant de lancer la moindre
+        itération de Pathfinding pour mettre à jour les obstacles physiques en fonction des Netclasses actuelles.
+        """
+        if not PCBNEW_AVAILABLE or self.board is None:
+            return
+        try:
+            if hasattr(self.board, "Zones") and hasattr(pcbnew, "ZONE_FILLER"):
+                zones = self.board.Zones()
+                if zones and len(zones) > 0:
+                    filler = pcbnew.ZONE_FILLER(self.board)
+                    filler.Fill(zones)
+                    logger.info(f"Pre-Routing Zone Fill : {len(zones)} zone(s) de cuivre recalculée(s) selon les Netclasses actuelles.")
+        except Exception as e:
+            logger.warning(f"Avertissement lors du Pre-Routing Zone Fill : {e}")
+
     @staticmethod
     def is_ground_net(net_name: str) -> bool:
         """Détecte intelligemment si un réseau correspond à la masse."""
@@ -1278,6 +1299,11 @@ class SmartRouter:
         """
         start_t = time.time()
         self.extract_netclasses()
+
+        # Correction obligatoire : Pre-Routing Zone Fill
+        # Avant de lancer la moindre itération de Pathfinding, forcer KiCad à recalculer toutes les zones
+        # de la carte pour mettre à jour les obstacles physiques en fonction des Netclasses actuelles.
+        self.pre_route_zone_fill()
 
         edge_bb = self.board.GetBoardEdgesBoundingBox()
         if edge_bb.GetWidth() > 0 and edge_bb.GetHeight() > 0:
