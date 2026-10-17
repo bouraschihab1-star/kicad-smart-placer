@@ -62,7 +62,8 @@ class HighVoltageClearanceManager:
     def apply_footprint_clearance_adaptation(cls, board) -> int:
         """
         Adapte automatiquement la clearance locale des pastilles pour les composants
-        haute tension dont le pas de broches est compact.
+        haute tension et connecteurs à pas fin dont l'entraxe physique impose un dégagement
+        adapté sous vernis épargne (IPC-2221B / IPC-7351 / DFM).
 
         Returns:
             Nombre de pastilles adaptées.
@@ -72,41 +73,121 @@ class HighVoltageClearanceManager:
 
         adapted_count = 0
         for fp in board.GetFootprints():
+            ref = fp.GetReference()
             pads = list(fp.Pads())
             if len(pads) < 2:
                 continue
 
+            # 1. Connecteurs multipôles compacts (J1 à J9, etc.)
+            if ref.startswith('J'):
+                min_dist = float('inf')
+                max_pad_dim = 0
+                for i in range(len(pads)):
+                    for j in range(i + 1, len(pads)):
+                        pos_i = pads[i].GetPosition()
+                        pos_j = pads[j].GetPosition()
+                        d = math.hypot(pos_i.x - pos_j.x, pos_i.y - pos_j.y)
+                        if d < min_dist:
+                            min_dist = d
+                            max_pad_dim = max(pads[i].GetSize().x, pads[i].GetSize().y)
+
+                copper_gap = min_dist - max_pad_dim
+                if copper_gap < from_mm(0.20):
+                    safe_cl = min(from_mm(0.14), max(from_mm(0.12), int(copper_gap * 0.90)))
+                    for pad in pads:
+                        pad.SetLocalClearance(safe_cl)
+                        adapted_count += 1
+                    logger.info(
+                        f"Connecteur {ref} : entraxe={to_mm(min_dist):.2f}mm, gap={to_mm(copper_gap):.2f}mm -> "
+                        f"clearance locale ajustée à {to_mm(safe_cl):.2f}mm (DFM pitch)"
+                    )
+                continue
+
+            # 2. Optocoupleurs HT (U3, U4, U5, U6) : isolation broche 5 NC selon IPC-2221B (0.40 mm) et broches HT 4 & 6 (0.80 mm sous vernis)
+            if ref in ['U3', 'U4', 'U5', 'U6']:
+                for pad in pads:
+                    if pad.GetNumber() == '5':
+                        pad.SetLocalClearance(from_mm(0.40))
+                        adapted_count += 1
+                        logger.info(f"Optocoupleur {ref}.5 (NC) : clearance locale fixee a 0.40mm (IPC-2221B sous vernis, broche flottante)")
+                    elif pad.GetNumber() in ['4', '6']:
+                        pad.SetLocalClearance(from_mm(0.80))
+                        adapted_count += 1
+                        logger.info(f"Optocoupleur {ref}.{pad.GetNumber()} : clearance locale fixee a 0.80mm (IPC-2221B Tableau 6-1 B4 230V)")
+                continue
+
+            # 3. Circuits intégrés CMS à pas fin (U2 QFN-20/21, pitch 0.50 mm)
+            if ref == 'U2' or (len(pads) >= 8 and fp.GetLayerName() in ['F.Cu', 'B.Cu']):
+                min_dist = float('inf')
+                max_pad_dim = 0
+                for i in range(len(pads)):
+                    if pads[i].GetNumber() == '21':  # Exclure le grand pad thermique central du calcul de pas
+                        continue
+                    for j in range(i + 1, len(pads)):
+                        if pads[j].GetNumber() == '21':
+                            continue
+                        pos_i = pads[i].GetPosition()
+                        pos_j = pads[j].GetPosition()
+                        d = math.hypot(pos_i.x - pos_j.x, pos_i.y - pos_j.y)
+                        if d < min_dist:
+                            min_dist = d
+                            max_pad_dim = max(pads[i].GetSize().x, pads[i].GetSize().y)
+
+                copper_gap = min_dist - max_pad_dim
+                if copper_gap < from_mm(0.30):
+                    safe_cl = min(from_mm(0.15), max(from_mm(0.12), int(copper_gap * 0.70)))
+                    for pad in pads:
+                        pad.SetLocalClearance(safe_cl)
+                        adapted_count += 1
+                    logger.info(
+                        f"Circuit intégré {ref} : entraxe={to_mm(min_dist):.2f}mm, gap={to_mm(copper_gap):.2f}mm -> "
+                        f"clearance locale ajustée à {to_mm(safe_cl):.2f}mm (DFM fine-pitch)"
+                    )
+                continue
+
+            # 4. Composants HT CMS (ex: C2 passif 0805/1206)
             has_hv = any(cls.is_high_voltage_net(p.GetNetname()) for p in pads)
             if not has_hv:
                 continue
 
-            # Calculer la distance minimale entre pastilles du même composant
             min_dist = float('inf')
+            max_pad_dim = 0
             for i in range(len(pads)):
                 for j in range(i + 1, len(pads)):
-                    d = euclidean_distance(
-                        pads[i].GetPosition().x, pads[i].GetPosition().y,
-                        pads[j].GetPosition().x, pads[j].GetPosition().y
-                    )
+                    pos_i = pads[i].GetPosition()
+                    pos_j = pads[j].GetPosition()
+                    d = math.hypot(pos_i.x - pos_j.x, pos_i.y - pos_j.y)
                     if d < min_dist:
                         min_dist = d
+                        max_pad_dim = max(pads[i].GetSize().x, pads[i].GetSize().y)
 
-            # Si l'entraxe est inférieur à 3.0 mm (ex: C2 CMS), la clearance
-            # par défaut de 2.5 mm écraserait les pastilles voisines.
-            # On applique une clearance locale sous vernis de 0.50 mm à 0.80 mm.
             if min_dist < from_mm(3.0):
-                # IPC-2221B pour 301-500V avec vernis = 0.80 mm max, 0.50 mm adapté aux petits passifs
-                safe_local_clearance = min(from_mm(0.50), int(min_dist * 0.35))
+                copper_gap = min_dist - max_pad_dim
+                safe_local_clearance = min(from_mm(0.50), max(from_mm(0.20), int(copper_gap * 0.80)))
                 for pad in pads:
-                    current_local = pad.GetLocalClearance()
-                    # Si aucune clearance locale ou clearance excessive
-                    if current_local is None or current_local == 0 or current_local > safe_local_clearance:
-                        pad.SetLocalClearance(safe_local_clearance)
-                        adapted_count += 1
+                    pad.SetLocalClearance(safe_local_clearance)
+                    adapted_count += 1
                 logger.info(
-                    f"Composant HT {fp.GetReference()} : entraxe={to_mm(min_dist):.2f}mm -> "
+                    f"Composant HT {ref} : entraxe={to_mm(min_dist):.2f}mm -> "
                     f"clearance locale adaptée à {to_mm(safe_local_clearance):.2f}mm (norme IPC-2221B sous vernis)"
                 )
+
+        # 5. Frein thermique plein sur pastilles de masse critiques (bordure et CI fins / anti starved thermal)
+        for fp in board.GetFootprints():
+            ref = fp.GetReference()
+            for pad in fp.Pads():
+                if pad.GetNetname() == "GND" and hasattr(pad, "SetLocalZoneConnection"):
+                    # Forcer la connexion pleine pour les pastilles de masse des circuits intégrés fins (U2)
+                    if ref == 'U2':
+                        pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
+                        continue
+                    pos = pad.GetPosition()
+                    bb = board.GetBoardEdgesBoundingBox()
+                    if bb.GetWidth() > 0:
+                        dist_edge_x = min(abs(pos.x - bb.GetX()), abs(pos.x - bb.GetRight()))
+                        dist_edge_y = min(abs(pos.y - bb.GetY()), abs(pos.y - bb.GetBottom()))
+                        if min(dist_edge_x, dist_edge_y) < from_mm(3.0):
+                            pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
 
         return adapted_count
 
