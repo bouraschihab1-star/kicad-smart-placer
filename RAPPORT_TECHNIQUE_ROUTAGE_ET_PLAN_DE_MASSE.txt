@@ -1,27 +1,27 @@
 ================================================================================
-  RAPPORT TECHNIQUE D'EXPERIMENTATION : ALGORITHMES ET RAISONNEMENT DE CONCEPTION
+  RAPPORT TECHNIQUE D'EXPÉRIMENTATION : ALGORITHMES ET RAISONNEMENT DE CONCEPTION
 ================================================================================
-Projet       : Developpement d'un plugin de Placement et Routage pour KiCad
-Auteur       : Bouras Chihabedinne
-Cadre        : Presentation de projet d'ingenierie / etude algorithmique
-Environnement: KiCad 10 / Python 3 (API pcbnew)
+Projet        : Développement d'un plugin de placement et routage pour KiCad
+Auteur        : Bouras Chihabedinne
+Cadre         : Présentation de projet d'ingénierie / étude algorithmique
+Environnement : KiCad 10 / Python 3 (API pcbnew)
 
 
 --------------------------------------------------------------------------------
-1. INTRODUCTION ET DEMARCHE GENERALE DU PROJET
+1. INTRODUCTION ET DÉMARCHE GÉNÉRALE DU PROJET
 --------------------------------------------------------------------------------
 
-Dans le cadre de ce projet, j'ai developpe un plugin pour KiCad visant a automatiser
-les etapes qui suivent la saisie du schema electronique : le placement des composants 
-sur la carte, la creation du contour et le routage automatique des pistes, avec un 
+Dans le cadre de ce projet, j'ai développé un plugin pour KiCad visant à automatiser
+les étapes qui suivent la saisie du schéma électronique : le placement des composants 
+sur la carte, la création du contour et le routage automatique des pistes, avec un 
 plan de masse.
 
-Ma demarche a ete experimentale et iterative : a chaque etape, j'ai teste une premiere 
-approche, observe les defauts concrets (composants trop eloignes, pistes qui se croisent, 
-vias places n'importe ou, trous sur des pastilles CMS, ou plan de masse coupe), et 
-cherche ensuite l'algorithme le plus pertinent pour resoudre chaque difficulte.
+Ma démarche a été expérimentale et itérative : à chaque étape, j'ai testé une première 
+approche, observé les défauts concrets (composants trop éloignés, pistes qui se croisent, 
+vias placés n'importe où, trous sur des pastilles CMS, ou plan de masse coupé), et 
+cherché ensuite l'algorithme le plus pertinent pour résoudre chaque difficulté.
 
-Ce document resume les algorithmes que j'ai essayes et implementes, ainsi que mon 
+Ce document résume les algorithmes que j'ai essayés et implémentés, ainsi que mon 
 raisonnement pour chacun d'eux.
 
 
@@ -29,81 +29,81 @@ raisonnement pour chacun d'eux.
 2. LES ALGORITHMES DE PLACEMENT ET MON RAISONNEMENT
 --------------------------------------------------------------------------------
 
-Pour le placement des composants, le probleme principal est d'eviter d'avoir des fils 
+Pour le placement des composants, le problème principal est d'éviter d'avoir des fils 
 qui partent dans tous les sens et se croisent, tout en gardant une carte compacte. 
-Voici les algorithmes que j'ai combines :
+Voici les algorithmes que j'ai combinés :
 
-1. Partitionnement par decoupe (Min-Cut / Fiduccia-Mattheyses) :
-   - Ce que j'ai constate au depart :
-     Si je place les composants au hasard ou un par un, les composants qui doivent etre 
-     connectes ensemble (par exemple un circuit integre et son condensateur de 
-     decouplage) se retrouvent souvent eparpilles aux deux bouts de la carte.
-   - Ce que j'ai essaye :
-     J'ai implemente une decoupe recursive de l'espace en 4 zones (quadrants). 
-     L'algorithme analyse les connexions entre les composants et cherche a les repartir 
-     de maniere a ce qu'il y ait le moins de fils possible qui traversent les lignes 
-     de separation.
+1. Partitionnement par découpe (Min-Cut / Fiduccia-Mattheyses) :
+   - Ce que j'ai constaté au départ :
+     Si je place les composants au hasard ou un par un, les composants qui doivent être 
+     connectés ensemble (par exemple un circuit intégré et son condensateur de 
+     découplage) se retrouvent souvent éparpillés aux deux bouts de la carte.
+   - Ce que j'ai essayé :
+     J'ai implémenté une découpe récursive de l'espace en 4 zones (quadrants). 
+     L'algorithme analyse les connexions entre les composants et cherche à les répartir 
+     de manière à ce qu'il y ait le moins de fils possible qui traversent les lignes 
+     de séparation.
    - Mon raisonnement :
-     Cet algorithme est tres rapide et permet de regrouper des le debut les composants 
-     qui travaillent ensemble dans la meme zone, ce qui simplifie enormement la suite.
+     Cet algorithme est très rapide et permet de regrouper dès le début les composants 
+     qui travaillent ensemble dans la même zone, ce qui simplifie énormément la suite.
 
-2. Placement par modele de ressorts (Force-Directed / Loi de Hooke) :
-   - Mon idee :
-     Une fois les groupes crees, pour determiner la position exacte de chaque composant, 
-     j'ai modelise les connexions electriques comme des petits ressorts physiques.
+2. Placement par modèle de ressorts (Force-Directed / Loi de Hooke) :
+   - Mon idée :
+     Une fois les groupes créés, pour déterminer la position exacte de chaque composant, 
+     j'ai modélisé les connexions électriques comme des petits ressorts physiques.
    - Mon raisonnement :
-     Si deux composants sont relies par un fil, ils s'attirent mutuellement selon la 
-     loi de Hooke (F = -k * distance). En calculant le point d'equilibre mecanique, 
+     Si deux composants sont reliés par un fil, ils s'attirent mutuellement selon la 
+     loi de Hooke (F = -k * distance). En calculant le point d'équilibre mécanique, 
      chaque composant se place naturellement au barycentre de ses liaisons, ce qui 
-     reduit la longueur totale des connexions sans calcul complexe.
+     réduit la longueur totale des connexions sans calcul complexe.
 
-3. Evaluation et minimisation des croisements de fils (Planarite) :
+3. Évaluation et minimisation des croisements de fils (Planarité) :
    - Mon constat :
-     Sur un circuit a deux couches, chaque fois que deux fils se croisent sur le 
-     placement, le routeur risque d'etre bloque et de devoir forer deux vias pour 
+     Sur un circuit à deux couches, chaque fois que deux fils se croisent sur le 
+     placement, le routeur risque d'être bloqué et de devoir forer deux vias pour 
      passer au-dessus ou en-dessous.
-   - Ce que j'ai essaye :
-     J'ai ajoute une fonction qui compte geometriquement le nombre d'intersections 
+   - Ce que j'ai essayé :
+     J'ai ajouté une fonction qui compte géométriquement le nombre d'intersections 
      entre les segments du chevelu (ratsnest).
    - Mon raisonnement :
-     En penalisant fortement les croisements dans la fonction de cout, j'ai cherche a 
+     En pénalisant fortement les croisements dans la fonction de coût, j'ai cherché à 
      obtenir un placement presque planaire. Cela permet au routeur de tracer une grande 
-     majorite des pistes directement sur la meme face sans avoir besoin de vias.
+     majorité des pistes directement sur la même face sans avoir besoin de vias.
 
-4. Recuit simule (Simulated Annealing) :
-   - Le probleme rencontre :
-     Si j'utilise une simple methode gloutonne (accepter un deplacement uniquement s'il 
-     ameliore le score), l'algorithme reste bloque tres vite dans le premier obstacle 
+4. Recuit simulé (Simulated Annealing) :
+   - Le problème rencontré :
+     Si j'utilise une simple méthode gloutonne (accepter un déplacement uniquement s'il 
+     améliore le score), l'algorithme reste bloqué très vite dans le premier obstacle 
      venu (un minimum local dont il ne peut plus sortir).
-   - Ce que j'ai implemente :
-     J'ai applique le principe du recuit simule. L'algorithme effectue des modifications 
-     aleatoires (deplacer un composant, le tourner de 90 degres, ou echanger deux 
-     composants identiques). Au debut ("a haute temperature"), il accepte parfois des 
+   - Ce que j'ai implémenté :
+     J'ai appliqué le principe du recuit simulé. L'algorithme effectue des modifications 
+     aléatoires (déplacer un composant, le tourner de 90 degrés, ou échanger deux 
+     composants identiques). Au début ("à haute température"), il accepte parfois des 
      solutions moins bonnes pour explorer la carte et sortir des impasses, puis il 
-     devient de plus en plus selectif au fur et a mesure que la temperature baisse.
+     devient de plus en plus sélectif au fur et à mesure que la température baisse.
    - Mon raisonnement :
-     C'est cette methode qui m'a permis d'obtenir le meilleur compromis entre surface 
-     de carte reduite et continuite des connexions.
+     C'est cette méthode qui m'a permis d'obtenir le meilleur compromis entre surface 
+     de carte réduite et continuité des connexions.
 
 5. Suppression des chevauchements par spirale (De-Overlap) :
-   - Le probleme constate :
-     A la fin du recuit simule, certains composants peuvent encore se chevaucher 
-     legerement.
-   - Ce que j'ai essaye :
-     J'ai d'abord pense a pousser tous les composants sur le cote (comme dans un jeu de 
-     Tetris), mais cela detruisait tout le travail de regroupement effectue juste avant. 
-     J'ai donc prefere ecrire un algorithme de recherche en spirale : si deux boites 
-     se touchent, le composant est decale sur les positions libres les plus proches 
+   - Le problème constaté :
+     À la fin du recuit simulé, certains composants peuvent encore se chevaucher 
+     légèrement.
+   - Ce que j'ai essayé :
+     J'ai d'abord pensé à pousser tous les composants sur le côté (comme dans un jeu de 
+     Tetris), mais cela détruisait tout le travail de regroupement effectué juste avant. 
+     J'ai donc préféré écrire un algorithme de recherche en spirale : si deux boîtes 
+     se touchent, le composant est décalé sur les positions libres les plus proches 
      en tournant autour de sa position initiale.
    - Mon raisonnement :
-     Cela permet de separer les composants a 100% tout en restant au plus pres de la 
-     position ideale calculee par le recuit.
+     Cela permet de séparer les composants à 100% tout en restant au plus près de la 
+     position idéale calculée par le recuit.
 
-6. Generation automatique du contour de carte (Edge.Cuts) :
+6. Génération automatique du contour de carte (Edge.Cuts) :
    - Mon raisonnement :
-     Pour eviter d'avoir a dessiner manuellement le bord de la carte a l'oeil, j'ai 
-     calcule le rectangle minimal qui englobe tous les composants places, et j'y ai 
-     ajoute une marge de securite de 1.0 mm tout autour. Cela donne automatiquement 
+     Pour éviter d'avoir à dessiner manuellement le bord de la carte à l'œil, j'ai 
+     calculé le rectangle minimal qui englobe tous les composants placés, et j'y ai 
+     ajouté une marge de sécurité de 1.0 mm tout autour. Cela donne automatiquement 
      une carte de dimensions minimales.
 
 
@@ -111,147 +111,147 @@ Voici les algorithmes que j'ai combines :
 3. LES ALGORITHMES DE ROUTAGE ET MON RAISONNEMENT
 --------------------------------------------------------------------------------
 
-Le routage consiste a remplacer les lignes virtuelles du chevelu par de vraies pistes 
+Le routage consiste à remplacer les lignes virtuelles du chevelu par de vraies pistes 
 de cuivre sans qu'elles ne se touchent.
 
 7. Recherche de chemin A* sur une grille 3D :
-   - Ce que j'ai essaye :
-     J'ai decoupe la carte en une grille de petits pas (0.20 mm) sur deux niveaux 
-     (couche avant F.Cu et couche arriere B.Cu). Pour trouver le chemin entre deux 
+   - Ce que j'ai essayé :
+     J'ai découpé la carte en une grille de petits pas (0.20 mm) sur deux niveaux 
+     (couche avant F.Cu et couche arrière B.Cu). Pour trouver le chemin entre deux 
      pastilles, j'utilise l'algorithme A*.
    - Pourquoi cet algorithme :
      J'avais le choix avec un algorithme de parcours en largeur (BFS ou algorithme de Lee). 
-     Mais le BFS explore en rond dans toutes les directions et devient extremement lent 
-     et lourd en memoire des que la carte grandit. L'algorithme A* utilise une estimation 
-     (heuristique) qui oriente directement la recherche vers la pastille d'arrivee, ce qui 
+     Mais le BFS explore en rond dans toutes les directions et devient extrêmement lent 
+     et lourd en mémoire dès que la carte grandit. L'algorithme A* utilise une estimation 
+     (heuristique) qui oriente directement la recherche vers la pastille d'arrivée, ce qui 
      le rend beaucoup plus rapide.
 
-8. Heuristique d'Octile pour les angles a 45 et 90 degres :
+8. Heuristique d'Octile pour les angles à 45 et 90 degrés :
    - Mon raisonnement :
-     Sur un circuit imprime, faire des angles aigus ou quelconques n'est pas bon car 
-     cela piege les liquides chimiques lors de la gravure du cuivre. J'ai donc calibre 
-     l'heuristique de distance pour favoriser les deplacements droits et les diagonales 
-     a 45 degres. De plus, j'ai retire ce reglage de l'interface graphique pour que ce 
-     soit applique proprement sans que l'utilisateur n'ait a s'en soucier.
+     Sur un circuit imprimé, faire des angles aigus ou quelconques n'est pas bon car 
+     cela piège les liquides chimiques lors de la gravure du cuivre. J'ai donc calibré 
+     l'heuristique de distance pour favoriser les déplacements droits et les diagonales 
+     à 45 degrés. De plus, j'ai retiré ce choix de l'interface graphique pour que ce 
+     soit appliqué proprement sans que l'utilisateur n'ait à s'en soucier.
 
-9. Strategie mono-couche d'abord ("Zero-Via First") :
-   - Le probleme rencontre lors de mes premiers tests :
-     Le routeur mettait des vias un peu partout des qu'il rencontrait le moindre obstacle, 
-     ce qui creait des trous inutiles sur la carte et coupait la face arriere.
-   - Ce que j'ai essaye :
-     J'ai oblige l'algorithme a chercher d'abord un chemin complet sur la couche de face 
-     (F.Cu) en interdisant totalement les vias. Ce n'est que s'il est reellement bloque 
-     qu'il a le droit de tester la face arriere.
+9. Stratégie mono-couche d'abord ("Zero-Via First") :
+   - Le problème rencontré lors de mes premiers tests :
+     Le routeur mettait des vias un peu partout dès qu'il rencontrait le moindre obstacle, 
+     ce qui créait des trous inutiles sur la carte et coupait la face arrière.
+   - Ce que j'ai essayé :
+     J'ai obligé l'algorithme à chercher d'abord un chemin complet sur la couche de face 
+     (F.Cu) en interdisant totalement les vias. Ce n'est que s'il est réellement bloqué 
+     qu'il a le droit de tester la face arrière.
    - Mon raisonnement :
      Cela permet de garder un maximum de pistes sur une seule couche et de laisser la 
-     face arriere libre et propre pour le plan de masse.
+     face arrière libre et propre pour le plan de masse.
 
-10. Interdiction mathematique stricte du "Via-in-Pad" :
-    - Le probleme rencontre :
-      Dans des versions precedentes, quand le routeur manquait d'espace autour d'une 
-      pastille de composant CMS, il placait parfois un via directement a l'interieur 
-      ou a cheval sur la pastille.
-    - Pourquoi c'est genant :
+10. Interdiction mathématique stricte du "Via-in-Pad" :
+    - Le problème rencontré :
+      Dans des versions précédentes, quand le routeur manquait d'espace autour d'une 
+      pastille de composant CMS, il plaçait parfois un via directement à l'intérieur 
+      ou à cheval sur la pastille.
+    - Pourquoi c'est gênant :
       En pratique, lorsqu'on pose et qu'on soude un composant CMS, si un trou de via est 
-      present sur la pastille, l'etain fondu est aspire dans le trou par capillarite. 
+      présent sur la pastille, l'étain fondu est aspiré dans le trou par capillarité. 
       La pastille se retrouve sans soudure (joint sec) et le composant ne fonctionne pas.
     - Ce que j'ai fait :
-      J'ai ajoute un calcul geometrique strict. Avant de poser un via, l'algorithme verifie 
+      J'ai ajouté un calcul géométrique strict. Avant de poser un via, l'algorithme vérifie 
       la distance exacte avec toutes les pastilles voisines :
       
           Distance > (Rayon du via) + (Demi-largeur de la pastille) + Marge d'isolement
           
-      Si la condition n'est pas remplie, le via est purement et simplement refuse.
+      Si la condition n'est pas remplie, le via est purement et simplement refusé.
 
-11. Augmentation de la penalite de via (facteur x100) :
-    - Mon idee :
-      Pour empecher le routeur de changer de face a la legere (notamment sur les signaux 
-      secteur 230V comme sur C2), j'ai multiplie le cout d'un via par 100 dans la fonction 
-      A*. Perforer la carte "coute" desormais l'equivalent de 2.5 metres de piste.
+11. Augmentation de la pénalité de via (facteur x100) :
+    - Mon idée :
+      Pour empêcher le routeur de changer de face à la légère (notamment sur les signaux 
+      secteur 230V comme sur C2), j'ai multiplié le coût d'un via par 100 dans la fonction 
+      A*. Perforer la carte "coûte" désormais l'équivalent de 2.5 mètres de piste.
     - Mon raisonnement :
-      Face a ce cout enorme, le routeur prefere chercher un detour, meme un peu plus long, 
-      sur la couche active plutot que de traverser le PCB.
+      Face à ce coût énorme, le routeur préfère chercher un détour, même un peu plus long, 
+      sur la couche active plutôt que de traverser le PCB.
 
-12. Ordre de priorite des pistes a router :
+12. Ordre de priorité des pistes à router :
     - Mon constat :
       Si on route d'abord les petits fils faciles, ils prennent toute la place centrale. 
       Quand vient le tour des pistes de puissance ou du 230V, qui demandent une grosse 
       distance d'isolement (2.5 mm de clearance), il n'y a plus aucun passage possible.
     - Mon raisonnement :
-      J'ai trie les pistes pour router en premier celles qui ont les plus fortes 
+      J'ai trié les pistes pour router en premier celles qui ont les plus fortes 
       contraintes d'espace (le 230V d'abord), puis les alimentations, et enfin les 
       petits signaux qui sont beaucoup plus souples pour se faufiler.
 
-13. File de retentative (Retry Queue) et micro-decalage :
+13. File de retentative (Retry Queue) et micro-décalage :
     - Mon essai :
-      Parfois, une piste echoue simplement parce qu'une autre piste est passee 0.2 mm 
-      trop pres de son point d'entree. Au lieu de declarer un echec, je stocke la piste 
-      dans une file de retentative, et en seconde passe, l'algorithme essaye de decaler 
-      legerement les segments genants pour degager le passage.
+      Parfois, une piste échoue simplement parce qu'une autre piste est passée 0.2 mm 
+      trop près de son point d'entrée. Au lieu de déclarer un échec, je stocke la piste 
+      dans une file de retentative, et en seconde passe, l'algorithme essaye de décaler 
+      légèrement les segments gênants pour dégager le passage.
 
 
 --------------------------------------------------------------------------------
-4. LA GESTION DU PLAN DE MASSE ET MON RETOUR D'EXPERIENCE
+4. LA GESTION DU PLAN DE MASSE ET MON RETOUR D'EXPÉRIENCE
 --------------------------------------------------------------------------------
 
 14. Remplissage par zone native et freins thermiques :
     - Mon raisonnement :
-      Pour relier la masse (GND), j'ai choisi de generer une zone de cuivre KiCad avec 
+      Pour relier la masse (GND), j'ai choisi de générer une zone de cuivre KiCad avec 
       des freins thermiques. 
       Si on relie une pastille en cuivre plein direct, lors du soudage manuel, la chaleur 
-      du fer se dissipe dans toute la carte et on a beaucoup de mal a faire fondre l'etain. 
-      Les freins thermiques permettent a la fois d'avoir une bonne continuite electrique 
-      et de pouvoir souder sans difficulte.
+      du fer se dissipe dans toute la carte et on a beaucoup de mal à faire fondre l'étain. 
+      Les freins thermiques permettent à la fois d'avoir une bonne continuité électrique 
+      et de pouvoir souder sans difficulté.
 
-15. Recalcul prealable des zones (Zone Filler) :
-    - Ce que j'ai remarque :
-      Si une ancienne zone de cuivre est presente sur la carte pendant que le routeur 
-      travaille, le routeur la prend pour un obstacle physique et s'arrete.
+15. Recalcul préalable des zones (Zone Filler) :
+    - Ce que j'ai remarqué :
+      Si une ancienne zone de cuivre est présente sur la carte pendant que le routeur 
+      travaille, le routeur la prend pour un obstacle physique et s'arrête.
     - Ce que j'ai fait :
-      J'ai ajoute un appel a la fonction de remplissage de zone de KiCad des le debut 
+      J'ai ajouté un appel à la fonction de remplissage de zone de KiCad dès le début 
       pour recalculer les contours de cuivre exacts avant de chercher les chemins.
 
-16. Pourquoi j'ai supprime la methode des vias artificiels de masse :
-    - Ce que j'avais essaye :
-      Dans une premiere tentative pour m'assurer que tout soit relie a la masse, j'avais 
-      cree une fonction qui ajoutait automatiquement des vias de secours a cote de chaque 
+16. Pourquoi j'ai supprimé la méthode des vias artificiels de masse :
+    - Ce que j'avais essayé :
+      Dans une première tentative pour m'assurer que tout soit relié à la masse, j'avais 
+      créé une fonction qui ajoutait automatiquement des vias de secours à côté de chaque 
       pastille GND.
-    - Pourquoi j'ai decide de l'enlever :
-      En regardant le resultat, j'ai vu que cette methode ne servait a rien et polluait 
-      la carte : les pastilles sont deja reliees directement au plan de masse par leurs 
+    - Pourquoi j'ai décidé de l'enlever :
+      En regardant le résultat, j'ai vu que cette méthode ne servait à rien et polluait 
+      la carte : les pastilles sont déjà reliées directement au plan de masse par leurs 
       freins thermiques. Ajouter des vias artificiels ne faisait que percer des trous 
-      inutiles et couper le plan de masse sur la face arriere. J'ai donc completement 
-      retire cette partie du code.
+      inutiles et couper le plan de masse sur la face arrière. J'ai donc complètement 
+      retiré cette partie du code.
 
-17. Mon analyse des 2 lignes elastiques (ratsnests) qui restaient visibles :
-    - En observant les cas ou il restait deux fils non connectes sur le GND, j'ai pu 
+17. Mon analyse des 2 lignes élastiques (ratsnests) qui restaient visibles :
+    - En observant les cas où il restait deux fils non connectés sur le GND, j'ai pu 
       identifier deux raisons physiques :
       
-      a) Pastille enclavee par des pistes :
-         Pour que le plan de masse de KiCad puisse s'infiltrer jusqu'a une pastille, 
+      a) Pastille enclavée par des pistes :
+         Pour que le plan de masse de KiCad puisse s'infiltrer jusqu'à une pastille, 
          il faut un espace libre d'au moins 0.65 mm entre les pistes voisines. 
-         Si des pistes de signal contournent une broche de masse de trop pres, leurs 
-         zones d'isolement se touchent et forment une barriere. Le cuivre ne peut pas 
-         passer et la pastille reste isolee dans une petite bulle vide.
+         Si des pistes de signal contournent une broche de masse de trop près, leurs 
+         zones d'isolement se touchent et forment une barrière. Le cuivre ne peut pas 
+         passer et la pastille reste isolée dans une petite bulle vide.
          
-      b) Plan de masse coupe en deux ilots :
+      b) Plan de masse coupé en deux îlots :
          Lorsque des pistes traversent la carte de part en part sur la face avant, elles 
          coupent la zone de cuivre en deux morceaux distincts. Chaque morceau est bien 
-         a la masse, mais ils ne se touchent pas directement. KiCad trace alors un fil 
+         à la masse, mais ils ne se touchent pas directement. KiCad trace alors un fil 
          de chevelu entre les deux morceaux pour signaler qu'il faut les relier.
-         La solution logique est de laisser la face arriere (B.Cu) libre pour servir de 
-         pont naturel entre les deux cotes.
+         La solution logique est de laisser la face arrière (B.Cu) libre pour servir de 
+         pont naturel entre les deux côtés.
 
 
 --------------------------------------------------------------------------------
 5. BILAN DE MES ESSAIS
 --------------------------------------------------------------------------------
 
-Grace a ces ajustements et a cette suite d'algorithmes :
-- Les 20 pistes de mon circuit de test sont toutes routees a 100%.
+Grâce à ces ajustements et à cette suite d'algorithmes :
+- Les 20 pistes de mon circuit de test sont toutes routées à 100%.
 - Il n'y a aucun via sur le composant 230V (C2), le signal reste sur une seule couche.
-- L'interdiction des vias sur les pastilles CMS est respectee.
-- L'option inutile des 45 degres a ete retiree de l'interface pour eviter toute 
-  confusion a l'utilisation.
+- L'interdiction des vias sur les pastilles CMS est respectée.
+- L'option inutile des 45 degrés a été retirée de l'interface pour éviter toute 
+  confusion à l'utilisation.
 - Le plan de masse est propre et sans vias artificiels parasites.
 ================================================================================
