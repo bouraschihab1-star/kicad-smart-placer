@@ -40,7 +40,7 @@ logger = setup_logger("SmartPlacerGUI")
 #  VALEURS PAR DÉFAUT INDUSTRIELLES
 # =============================================================================
 DEFAULT_SETTINGS: Dict[str, Any] = {
-    # Onglet 1 : Placement (Mode Extrême et 45° par défaut)
+    # Onglet 1 : Placement (Mode Extrême par défaut)
     "placement_effort": "Extrême",
     "placement_effort_level": 3,
     "placement_grid": "0.5 mm",
@@ -84,7 +84,6 @@ if WX_AVAILABLE:
     class PlacementTabPanel(wx.Panel):
         GRID_CHOICES = ["0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.54 mm"]
         LAYER_CHOICES = ["F.Cu", "F.Cu + B.Cu"]
-        ROTATION_CHOICES = ["90°", "45°"]
 
         def __init__(self, parent):
             super().__init__(parent)
@@ -116,18 +115,6 @@ if WX_AVAILABLE:
             self.choice_layer.SetSelection(0)  # "F.Cu" par défaut
             sz_layer.Add(self.choice_layer, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
             sizer.Add(sz_layer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
-
-            # 4. Angles autorisés (0 choix : strictement 45°)
-            box_rot = wx.StaticBox(self, label="Orientation")
-            sz_rot = wx.StaticBoxSizer(box_rot, wx.HORIZONTAL)
-
-            lbl_rot = wx.StaticText(box_rot, label="Angles autorisés :")
-            sz_rot.Add(lbl_rot, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
-
-            txt_rot = wx.StaticText(box_rot, label="45° uniquement (Norme stricte)")
-            sz_rot.Add(txt_rot, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 6)
-            sizer.Add(sz_rot, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
-
             self.SetSizer(sizer)
 
         def get_values(self) -> Dict[str, Any]:
@@ -148,7 +135,7 @@ if WX_AVAILABLE:
                 "placement_grid": grid_str,
                 "placement_grid_mm": grid_val,
                 "allow_bcu": allow_bcu,
-                "allow_rotations_45": True,  # 0 choix : toujours 45°
+                "allow_rotations_45": True,
             }
 
     # -------------------------------------------------------------------------
